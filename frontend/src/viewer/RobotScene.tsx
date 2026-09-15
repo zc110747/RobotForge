@@ -137,7 +137,13 @@ function makeGeometry(g: GeometryRefLike): THREE.BufferGeometry | null {
  *   而不只存在于 JS 对象里。这让自动化检查能直接在产物上验证数值。
  *   （`Vector3` 是对象，`renderToStaticMarkup` 会把它整个丢掉。）
  */
-function GeomMesh({ g }: { g: GeometryRefLike }): ReactNode {
+function GeomMesh({
+  g,
+  ghost = false,
+}: {
+  g: GeometryRefLike;
+  ghost?: boolean | undefined;
+}): ReactNode {
   const geometry = useMemo(() => makeGeometry(g), [g]);
   const { position, quaternion } = useMemo(
     () => transformToThree(g.transform),
@@ -174,7 +180,21 @@ function GeomMesh({ g }: { g: GeometryRefLike }): ReactNode {
       position={posArr}
       quaternion={quatArr}
     >
-      <meshStandardMaterial color={color} metalness={0.2} roughness={0.6} />
+      {ghost ? (
+        // 幽灵臂：线框 + 低不透明度。
+        // 用**线框**而不是纯半透明实心：实心半透明与权威臂重叠时，
+        // 两者会互相遮挡，反而看不出"偏差有多大"；
+        // 线框能让人同时看见两套几何的轮廓。
+        <meshBasicMaterial
+          color="#39c5ff"
+          wireframe
+          transparent
+          opacity={0.35}
+          depthWrite={false}
+        />
+      ) : (
+        <meshStandardMaterial color={color} metalness={0.2} roughness={0.6} />
+      )}
     </mesh>
   );
 }
@@ -245,11 +265,17 @@ function NodeView({
   node,
   eeByLink,
   showAxes,
+  jointPositions,
+  ghost,
 }: {
   vm: RobotViewModel;
   node: RenderNode;
   eeByLink: ReadonlyMap<string, readonly string[]>;
   showAxes: boolean;
+  /** 关节角（rad）；缺省 = 全 0（零位形）。**权威值与预演值共用本参数**。 */
+  jointPositions?: Readonly<Record<string, number>> | undefined;
+  /** 幽灵臂：半透明 + 不画轴/EE（它只是一层"预测"的视觉提示）。 */
+  ghost?: boolean | undefined;
 }): ReactNode {
   // link 相对父 joint 恒等（位移由 joint 的 origin 承担）。
   // ★ 用数字数组而非 Vector3 —— 让数值在渲染产物里可见（见 GeomMesh 注释）。
@@ -272,6 +298,30 @@ function NodeView({
     };
   }, [node]);
 
+  // ★ 关节自由度：**在 joint 节点自身坐标系里**额外绕 `axis` 转 `q`。
+  //
+  //   为什么不能并进 `node.localTransform`：那个 transform 是关节的
+  //   **安装位姿**（MJCF 的 `<joint pos=... axis=...>` 之于父 link），
+  //   而自由度是**安装之后**绕自身轴的转动。两者相乘的顺序是
+  //   `origin ∘ Rot(axis, q)`，Left-multiply 顺序不可反 ——
+  //   反了会让整条链在非零位形下系统性偏移（且看起来"差不多对"）。
+  //
+  //   这与 Core `backend/kinematics/fk.py` 完全一致：那里也是
+  //   `joint.origin` 再乘 `Quaternion.from_axis_angle(joint.axis, value)`。
+  //
+  //   `axisToThree` 只做**局部**轴换算（父坐标系已由整场景旋转带入），
+  //   理由见 coordinateAdapter.ts。
+  const jointQuat = useMemo<[number, number, number, number]>(() => {
+    if (node.kind !== "joint" || node.axis === null || !node.isMovable) {
+      return [0, 0, 0, 1];
+    }
+    const q = jointPositions?.[node.id] ?? 0;
+    if (q === 0) return [0, 0, 0, 1];
+    const axis = axisToThree(node.axis);
+    const rot = new THREE.Quaternion().setFromAxisAngle(axis, q);
+    return [rot.x, rot.y, rot.z, rot.w];
+  }, [node, jointPositions]);
+
   const childNodes = node.childKeys
     .map((k) => vm.nodes.find((n) => n.key === k))
     .filter((n): n is RenderNode => n !== undefined);
@@ -281,29 +331,70 @@ function NodeView({
   //   这是"看起来还行"的典型错误 —— 静态截图完全正常。
   const eeIdsHere = node.kind === "link" ? (eeByLink.get(node.id) ?? []) : [];
 
-  return (
-    <group
-      name={node.key}
-      position={posArr}
-      quaternion={quatArr}
-    >
+  // ★ 自由度施加在一个**内层 group** 上，而不是并进上面那个 group。
+  //
+  //   并进去是可行的（四元数左乘即可），但会让 `name={node.key}` 那个
+  //   group 的 `quaternion` **不再等于** `localTransform` 的朝向。
+  //   而 `render.check.ts` 的判据正是"节点 quaternion 应等于
+  //   adapter 换算出来的值"—— 那是一条验证 §41 没有偷偷改坐标的断言。
+  //   并进去会把它变成一条恒真的断言（拿被验对象自己算出来的值判它自己）。
+  //
+  //   分层之后：外层 = 模型的静态安装位姿（可被上述断言独立检查），
+  //             内层 = 运行期的自由度。两者各自可观测。
+  // ★ 自由度施加在一个**内层 group** 上，而不是并进上面那个 group。
+  //
+  //   并进去是可行的（四元数左乘即可），但会让 `name={node.key}` 那个
+  //   group 的 `quaternion` **不再等于** `localTransform` 的朝向。
+  //   而 `render.check.ts` 的判据正是"节点 quaternion 应等于
+  //   adapter 换算出来的值"—— 那是一条验证 §41 没有偷偷改坐标的断言。
+  //   并进去会把它变成一条恒真的断言（拿被验对象自己算出来的值判它自己）。
+  //
+  //   分层之后：外层 = 模型的静态安装位姿（可被上述断言独立检查），
+  //             内层 = 运行期的自由度。两者各自可观测。
+  const isJoint = node.kind === "joint";
+
+  const children = (
+    <>
       {/* link：画它的几何 */}
       {node.kind === "link" &&
-        node.geometries.map((g, i) => <GeomMesh key={`${node.key}-g${i}`} g={g} />)}
+        node.geometries.map((g, i) => (
+          <GeomMesh key={`${node.key}-g${i}`} g={g} ghost={ghost} />
+        ))}
 
-      {/* 该 link 上的末端执行器 */}
-      {eeIdsHere.map((eeId) => (
-        <EndEffectorMarker key={`ee-${eeId}`} vm={vm} eeId={eeId} />
-      ))}
+      {/* 该 link 上的末端执行器（幽灵臂不画 —— 它是预测，不该有"权威 EE 标记"的观感） */}
+      {!ghost &&
+        eeIdsHere.map((eeId) => (
+          <EndEffectorMarker key={`ee-${eeId}`} vm={vm} eeId={eeId} />
+        ))}
 
       {/* joint：画轴指示器（fixed 关节不画 —— 它没有自由度，画了会误导） */}
-      {showAxes && node.kind === "joint" && node.axis !== null && node.isMovable && (
+      {!ghost && showAxes && node.kind === "joint" && node.axis !== null && node.isMovable && (
         <AxisIndicator axis={node.axis} />
       )}
 
       {childNodes.map((c) => (
-        <NodeView key={c.key} vm={vm} node={c} eeByLink={eeByLink} showAxes={showAxes} />
+        <NodeView
+          key={c.key}
+          vm={vm}
+          node={c}
+          eeByLink={eeByLink}
+          showAxes={showAxes}
+          jointPositions={jointPositions}
+          ghost={ghost}
+        />
       ))}
+    </>
+  );
+
+  return (
+    <group name={node.key} position={posArr} quaternion={quatArr}>
+      {isJoint ? (
+        <group name={`dof:${node.id}`} quaternion={jointQuat}>
+          {children}
+        </group>
+      ) : (
+        children
+      )}
     </group>
   );
 }
@@ -378,6 +469,57 @@ export interface RobotSceneProps {
   showEndEffector?: boolean;
   /** 是否显示世界坐标架 */
   showWorldFrame?: boolean;
+  /**
+   * 关节角（rad）。缺省 = 全 0（零位形）。
+   *
+   * 本参数只做**陈述式**应用：谁把值放进来由调用方决定。
+   * ```text
+   * 权威姿态 —— App 把 robot_state.joints 传进来（§49 唯一闭环）
+   * 预演姿态 —— App 把 predictor 的 ghost 值传给 <GhostArm/>
+   * ```
+   */
+  jointPositions?: Readonly<Record<string, number>>;
+}
+
+/**
+ * 幽灵臂 —— 前端本地预演的可视化（§49 允许的形态）。
+ *
+ * ## 它为什么必须是一个**独立**的组件
+ *
+ * 因为它与权威树是**两棵 Object3D 树**。若把预演结果混进权威树的同一个
+ * `jointPositions`，那么"屏幕上看到的是预测还是真值"就无从区分 ——
+ * 而这正是 §49 要求被禁止的状态（预测会悄悄变成权威姿态的来源）。
+ *
+ * 排他性由 `App` 保证：
+ * ```text
+ * <RobotScene jointPositions={state.joints} />        ← 权威（永远画）
+ * {ghostOn && <GhostArm vm={vm} jointPositions={pred} />}   ← 预演（可关）
+ * ```
+ * 两者视觉上可区分（幽灵是蓝色线框），所以**永远能看出当前偏差有多大**。
+ */
+export function GhostArm({
+  vm,
+  jointPositions,
+}: {
+  vm: RobotViewModel;
+  jointPositions: Readonly<Record<string, number>>;
+}): ReactNode {
+  const roots = useMemo(() => vm.nodes.filter((n) => n.parentKey === null), [vm]);
+  return (
+    <group name="ghost-arm">
+      {roots.map((r) => (
+        <NodeView
+          key={r.key}
+          vm={vm}
+          node={r}
+          eeByLink={new Map()}
+          showAxes={false}
+          jointPositions={jointPositions}
+          ghost
+        />
+      ))}
+    </group>
+  );
 }
 
 export function RobotScene({
@@ -385,6 +527,7 @@ export function RobotScene({
   showAxes = true,
   showEndEffector = true,
   showWorldFrame = true,
+  jointPositions,
 }: RobotSceneProps): ReactNode {
   const roots = useMemo(
     () => vm.nodes.filter((n) => n.parentKey === null),
@@ -411,6 +554,7 @@ export function RobotScene({
           node={r}
           eeByLink={showEndEffector ? eeByLink : new Map()}
           showAxes={showAxes}
+          jointPositions={jointPositions}
         />
       ))}
 

@@ -175,6 +175,21 @@ __pycache__/
 # MuJoCo 运行期日志（每次仿真都会重写，不是源码）
 MUJOCO_LOG.TXT
 
+# ---------------------------------------------------------------------------
+# 前端自检的 esbuild 中间产物
+# ---------------------------------------------------------------------------
+# `render.check.ts` / `jointPanel.check.ts` 需要跑含 JSX 的 `.tsx`，而
+# `node --experimental-strip-types` 只删类型、**不转译 JSX** ⇒ 必须先 esbuild
+# 打包成 `__<name>.check.mjs` 再跑。它们是**构建产物**，与源码同步生成、
+# 每次跑脚本都会重写。
+#
+# ⚠️ 曾经误入库一次（commit c41ecc1 带进了 `__geom.check.mjs`）——
+#    后果是每次跑自检 `git status` 都脏，且 diff 里是一堆压缩后的
+#    **编译输出**，reviewer 完全无法看出源码改了什么。
+#    脚本自己会 `rmSync` 清理，但那发生在**跑完之后**；
+#    若中途抛错就留在盘上，仍然会被 `git add .` 收进去。
+frontend/src/**/__*.check.mjs
+
 # Agent 工作区：memory/ 与 skills/ 是**项目资产**，要入库；
 # 但 scratch/ 是临时探针与调试脚本，不入库。
 .workbuddy/scratch/
