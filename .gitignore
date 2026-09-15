@@ -151,11 +151,34 @@ activemq-data/
 .env
 .envrc
 .venv
+.venv/
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Node / 前端依赖与构建产物（**必须忽略**：node_modules 有 8000+ 文件）
+node_modules/
+node_modules
+dist/
+dist
+.vite/
+*.tsbuildinfo
+
+# 构建中间产物
+build/
+*.egg-info/
+__pycache__/
+*.py[cod]
+
+# MuJoCo 运行期日志（每次仿真都会重写，不是源码）
+MUJOCO_LOG.TXT
+
+# Agent 工作区：memory/ 与 skills/ 是**项目资产**，要入库；
+# 但 scratch/ 是临时探针与调试脚本，不入库。
+.workbuddy/scratch/
+.workbuddy/**/__pycache__/
 
 # Spyder project settings
 .spyderproject

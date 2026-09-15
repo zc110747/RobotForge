@@ -1,0 +1,81 @@
+# =============================================================================
+# Robot Package · mini_arm
+# -----------------------------------------------------------------------------
+# 本文件只放三样东西：**身份** / **能力声明** / **指针**（文档 robot-package.md §2）。
+#
+# ⚠️ 刻意**不写** dof / link_count / joint_names —— 它们能从 MJCF 推导。
+#    抄一份就是第二份真值，而它的漂移是静默的
+#    （改了 MJCF 的关节表，这里的 3 不会自己变成 4）。
+#    推导结果见 `python -m backend.cli show mini_arm`；
+#    期望值写在 `packages/mini_arm/tests/` 里。
+#
+# ⚠️ 坐标系与单位声明必须与 P0 契约（docs/coordinate-system.md）一致。
+#    校验器（RobotModelValidator）会逐字段比对，不一致直接拒绝加载。
+# =============================================================================
+
+id: mini_arm
+name: Mini Arm
+version: 1.0.0
+description: Minimal 3-DOF arm built to validate the RobotForge architecture (not a real product)
+
+# --- P0 契约：坐标系 ---------------------------------------------------------
+# +X = Forward(前) / +Y = Left(左) / +Z = Up(上)，右手系
+coordinate:
+  convention: robotforge
+  handedness: right
+  forward_axis: x
+  left_axis: y
+  up_axis: z
+
+# --- P0 契约：单位（SI）-----------------------------------------------------
+units:
+  length: m
+  angle: rad
+  time: s
+  linear_velocity: m/s
+  angular_velocity: rad/s
+  force: N
+  torque: N*m
+
+# --- 模型入口 ---------------------------------------------------------------
+# ★ v0.1 唯一允许的机器人模型格式是**原生 MJCF**
+#   （提示词 §7：禁止 robot.json / robotforge.xml 这类自定义结构描述文件）
+model:
+  format: mjcf
+  file: model/mini_arm.xml
+  # 本模型**无需坐标转换**（MJCF 本身即 RobotForge 约定）。
+  # 声明它有两个作用：
+  #   ① 让 "要不要转换" 成为**显式声明**，而不是 Loader 里的一个 if；
+  #   ② 未来某台机器人需要转换时，这个字段会提醒作者"你的模型和平台不同向"。
+  coordinate_transform: none
+
+# --- 运动学实现（包内，见 robot-package.md §5）-------------------------------
+kinematics:
+  # entry = 包内实现文件；v0.1 只有 Python 侧（前端用通用渲染器，无包内 TS 引擎）
+  fk:
+    type: package
+    entry: kinematics/fk.py
+  ik:
+    # mini_arm 的逆解是**它自己的**：平面 2R + 底座偏航的解析解。
+    # 之所以 `type: package` 而不是 `engine`（用 Core 的通用数值 IK）：
+    #   解析解能精确验证 "Joint → FK → Pose → IK → Joint'" 的往返一致性，
+    #   而数值解会引入迭代容差，让"往返测试通过"变成一件模糊的事。
+    type: package
+    entry: kinematics/ik.py
+
+# --- 能力声明 ---------------------------------------------------------------
+# ★ Frontend 必须**据 capability 动态决定**显示哪些功能，
+#   禁止 `if (robot.id === 'mini_arm')`（提示词 §69 规则 2）。
+#   于是"加一台没有 IK 的机器人"只需写 ik: false，前端自动不显示 IK 面板。
+capabilities:
+  simulation: true
+  fk: true
+  ik: true
+  actuator_control: true
+  end_effector: true
+
+# --- 包内测试 ---------------------------------------------------------------
+# 判据是"这条断言换台机器人还成立吗"：不成立 ⇒ 属于包。
+# 这里放的是 mini_arm 的**构造事实**（关节顺序、连杆长度、限位、往返精度）。
+tests:
+  local: packages/mini_arm/tests

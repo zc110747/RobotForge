@@ -1,0 +1,31 @@
+{
+  "name": "robotforge-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "RobotForge v0.1 frontend —— RobotModel → Renderer Adapter → Three.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test:semantics": "node --experimental-strip-types src/viewer/__tests__/semantics.check.ts"
+  },
+  "dependencies": {
+    "@react-three/drei": "^9.114.0",
+    "@react-three/fiber": "^8.17.10",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "@types/three": "^0.169.0",
+    "@vitejs/plugin-react": "^4.3.2",
+    "jsdom": "^30.0.1",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.9"
+  }
+}

@@ -1,0 +1,998 @@
+{
+  "robotId": "mini_arm",
+  "model": {
+    "metadata": {
+      "id": "mini_arm",
+      "name": "mini_arm",
+      "version": "0.0.0-from-mjcf",
+      "description": "Loaded from native MJCF (D:\\user_project\\git\\RobotForge\\packages\\mini_arm\\model\\mini_arm.xml)"
+    },
+    "coordinate": {
+      "convention": "robotforge",
+      "handedness": "right",
+      "forward_axis": "x",
+      "left_axis": "y",
+      "up_axis": "z"
+    },
+    "units": {
+      "length": "m",
+      "angle": "rad",
+      "time": "s",
+      "linear_velocity": "m/s",
+      "angular_velocity": "rad/s",
+      "force": "N",
+      "torque": "N*m"
+    },
+    "root_link": "base",
+    "base_frame": "base",
+    "links": [
+      {
+        "id": "base",
+        "name": "base",
+        "parent_joint": null,
+        "child_joints": [
+          "base_yaw"
+        ],
+        "inertial": {
+          "mass": 0.30347785033677405,
+          "center_of_mass": [
+            0.0,
+            0.0,
+            0.02243478260869565
+          ],
+          "inertia": {
+            "ixx": 0.00036005008004629224,
+            "iyy": 0.0003135507047142328,
+            "izz": 0.0003135507047142328,
+            "ixy": null,
+            "ixz": null,
+            "iyz": null
+          }
+        },
+        "visual": [],
+        "collision": [
+          {
+            "type": "cylinder",
+            "size": [
+              0.055,
+              0.012
+            ],
+            "asset": null,
+            "transform": {
+              "position": [
+                0.0,
+                0.0,
+                0.012
+              ],
+              "orientation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "rgba": [
+              0.5,
+              0.5,
+              0.5,
+              1.0
+            ]
+          },
+          {
+            "type": "cylinder",
+            "size": [
+              0.02,
+              0.03
+            ],
+            "asset": null,
+            "transform": {
+              "position": [
+                0.0,
+                0.0,
+                0.054
+              ],
+              "orientation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "rgba": [
+              0.5,
+              0.5,
+              0.5,
+              1.0
+            ]
+          }
+        ]
+      },
+      {
+        "id": "shoulder_link",
+        "name": "shoulder_link",
+        "parent_joint": "base_yaw",
+        "child_joints": [
+          "shoulder"
+        ],
+        "inertial": {
+          "mass": 0.2008485611857856,
+          "center_of_mass": [
+            0.0,
+            0.0,
+            0.026
+          ],
+          "inertia": {
+            "ixx": 8.663376581178433e-05,
+            "iyy": 8.160182981178433e-05,
+            "izz": 7.791807491209727e-05,
+            "ixy": null,
+            "ixz": null,
+            "iyz": null
+          }
+        },
+        "visual": [],
+        "collision": [
+          {
+            "type": "box",
+            "size": [
+              0.028,
+              0.024,
+              0.026
+            ],
+            "asset": null,
+            "transform": {
+              "position": [
+                0.0,
+                0.0,
+                0.026
+              ],
+              "orientation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "rgba": [
+              0.5,
+              0.5,
+              0.5,
+              1.0
+            ]
+          },
+          {
+            "type": "cylinder",
+            "size": [
+              0.018,
+              0.03
+            ],
+            "asset": null,
+            "transform": {
+              "position": [
+                0.0,
+                0.0,
+                0.026
+              ],
+              "orientation": [
+                0.7071067811865476,
+                0.0,
+                0.0,
+                0.7071067811865476
+              ]
+            },
+            "rgba": [
+              0.5,
+              0.5,
+              0.5,
+              1.0
+            ]
+          }
+        ]
+      },
+      {
+        "id": "upper_arm",
+        "name": "upper_arm",
+        "parent_joint": "shoulder",
+        "child_joints": [
+          "elbow"
+        ],
+        "inertial": {
+          "mass": 0.12787538737171894,
+          "center_of_mass": [
+            0.04058700209643606,
+            0.0,
+            0.0
+          ],
+          "inertia": {
+            "ixx": 0.00019557300332784724,
+            "iyy": 0.00019557300332784724,
+            "izz": 1.7001153388227936e-05,
+            "ixy": null,
+            "ixz": null,
+            "iyz": null
+          }
+        },
+        "visual": [],
+        "collision": [
+          {
+            "type": "capsule",
+            "size": [
+              0.016,
+              0.048
+            ],
+            "asset": null,
+            "transform": {
+              "position": [
+                0.055,
+                0.0,
+                0.0
+              ],
+              "orientation": [
+                0.0,
+                0.7071067811865476,
+                0.0,
+                0.7071067811865476
+              ]
+            },
+            "rgba": [
+              0.5,
+              0.5,
+              0.5,
+              1.0
+            ]
+          },
+          {
+            "type": "sphere",
+            "size": [
+              0.02
+            ],
+            "asset": null,
+            "transform": {
+              "position": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "orientation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "rgba": [
+              0.5,
+              0.5,
+              0.5,
+              1.0
+            ]
+          }
+        ]
+      },
+      {
+        "id": "forearm_link",
+        "name": "forearm_link",
+        "parent_joint": "elbow",
+        "child_joints": [
+          "ee_link_fixed"
+        ],
+        "inertial": {
+          "mass": 0.061638047863431744,
+          "center_of_mass": [
+            0.02331430513081889,
+            0.0,
+            0.0
+          ],
+          "inertia": {
+            "ixx": 4.167094403104576e-05,
+            "iyy": 4.167094403104576e-05,
+            "izz": 5.692911463496602e-06,
+            "ixy": null,
+            "ixz": null,
+            "iyz": null
+          }
+        },
+        "visual": [],
+        "collision": [
+          {
+            "type": "capsule",
+            "size": [
+              0.013,
+              0.03
+            ],
+            "asset": null,
+            "transform": {
+              "position": [
+                0.035,
+                0.0,
+                0.0
+              ],
+              "orientation": [
+                0.0,
+                0.7071067811865476,
+                0.0,
+                0.7071067811865476
+              ]
+            },
+            "rgba": [
+              0.5,
+              0.5,
+              0.5,
+              1.0
+            ]
+          },
+          {
+            "type": "sphere",
+            "size": [
+              0.017
+            ],
+            "asset": null,
+            "transform": {
+              "position": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "orientation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "rgba": [
+              0.5,
+              0.5,
+              0.5,
+              1.0
+            ]
+          }
+        ]
+      },
+      {
+        "id": "ee_link",
+        "name": "ee_link",
+        "parent_joint": "ee_link_fixed",
+        "child_joints": [],
+        "inertial": {
+          "mass": 0.015424000000000002,
+          "center_of_mass": [
+            0.010240663900414938,
+            0.0,
+            0.0
+          ],
+          "inertia": {
+            "ixx": 1.9597226666666674e-06,
+            "iyy": 1.859309322268327e-06,
+            "izz": 1.586669322268327e-06,
+            "ixy": null,
+            "ixz": null,
+            "iyz": null
+          }
+        },
+        "visual": [],
+        "collision": [
+          {
+            "type": "box",
+            "size": [
+              0.008,
+              0.014,
+              0.014
+            ],
+            "asset": null,
+            "transform": {
+              "position": [
+                0.008,
+                0.0,
+                0.0
+              ],
+              "orientation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "rgba": [
+              0.5,
+              0.5,
+              0.5,
+              1.0
+            ]
+          },
+          {
+            "type": "box",
+            "size": [
+              0.012,
+              0.003,
+              0.005
+            ],
+            "asset": null,
+            "transform": {
+              "position": [
+                0.02,
+                0.01,
+                0.0
+              ],
+              "orientation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "rgba": [
+              0.5,
+              0.5,
+              0.5,
+              1.0
+            ]
+          },
+          {
+            "type": "box",
+            "size": [
+              0.012,
+              0.003,
+              0.005
+            ],
+            "asset": null,
+            "transform": {
+              "position": [
+                0.02,
+                -0.01,
+                0.0
+              ],
+              "orientation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "rgba": [
+              0.5,
+              0.5,
+              0.5,
+              1.0
+            ]
+          }
+        ]
+      }
+    ],
+    "joints": [
+      {
+        "id": "base_yaw",
+        "name": "base_yaw",
+        "type": "revolute",
+        "parent_link": "base",
+        "child_link": "shoulder_link",
+        "origin": {
+          "position": [
+            0.0,
+            0.0,
+            0.084
+          ],
+          "orientation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "limits": {
+          "position_min": -3.14159265358979,
+          "position_max": 3.14159265358979,
+          "velocity_max": null,
+          "effort_max": null
+        },
+        "mimic": null
+      },
+      {
+        "id": "shoulder",
+        "name": "shoulder",
+        "type": "revolute",
+        "parent_link": "shoulder_link",
+        "child_link": "upper_arm",
+        "origin": {
+          "position": [
+            0.0,
+            0.0,
+            0.052
+          ],
+          "orientation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "axis": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "limits": {
+          "position_min": -1.5707963267949,
+          "position_max": 1.5707963267949,
+          "velocity_max": null,
+          "effort_max": null
+        },
+        "mimic": null
+      },
+      {
+        "id": "elbow",
+        "name": "elbow",
+        "type": "revolute",
+        "parent_link": "upper_arm",
+        "child_link": "forearm_link",
+        "origin": {
+          "position": [
+            0.103,
+            0.0,
+            0.0
+          ],
+          "orientation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "axis": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "limits": {
+          "position_min": -2.35619449019234,
+          "position_max": 2.35619449019234,
+          "velocity_max": null,
+          "effort_max": null
+        },
+        "mimic": null
+      },
+      {
+        "id": "ee_link_fixed",
+        "name": "ee_link_fixed",
+        "type": "fixed",
+        "parent_link": "forearm_link",
+        "child_link": "ee_link",
+        "origin": {
+          "position": [
+            0.065,
+            0.0,
+            0.0
+          ],
+          "orientation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "limits": null,
+        "mimic": null
+      }
+    ],
+    "actuators": [
+      {
+        "id": "base_yaw_motor",
+        "name": "base_yaw_motor",
+        "type": "position",
+        "joint": "base_yaw",
+        "command_min": -3.14159265358979,
+        "command_max": 3.14159265358979
+      },
+      {
+        "id": "shoulder_motor",
+        "name": "shoulder_motor",
+        "type": "position",
+        "joint": "shoulder",
+        "command_min": -1.5707963267949,
+        "command_max": 1.5707963267949
+      },
+      {
+        "id": "elbow_motor",
+        "name": "elbow_motor",
+        "type": "position",
+        "joint": "elbow",
+        "command_min": -2.35619449019234,
+        "command_max": 2.35619449019234
+      }
+    ],
+    "frames": [
+      {
+        "id": "world",
+        "name": "World",
+        "parent": "world",
+        "transform": {
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "orientation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        }
+      },
+      {
+        "id": "base",
+        "name": "base (base)",
+        "parent": "world",
+        "transform": {
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "orientation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        }
+      },
+      {
+        "id": "tcp_frame",
+        "name": "tcp (End Effector Frame)",
+        "parent": "ee_link",
+        "transform": {
+          "position": [
+            0.032,
+            0.0,
+            0.0
+          ],
+          "orientation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        }
+      }
+    ],
+    "sites": [
+      {
+        "id": "base_origin",
+        "name": "base_origin",
+        "parent": "base",
+        "transform": {
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "orientation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "role": null
+      },
+      {
+        "id": "ee_frame_site",
+        "name": "ee_frame_site",
+        "parent": "ee_link",
+        "transform": {
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "orientation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "role": null
+      },
+      {
+        "id": "tcp",
+        "name": "tcp",
+        "parent": "ee_link",
+        "transform": {
+          "position": [
+            0.032,
+            0.0,
+            0.0
+          ],
+          "orientation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "role": null
+      }
+    ],
+    "end_effectors": [
+      {
+        "id": "main_ee",
+        "name": "Main End Effector",
+        "frame": "tcp_frame",
+        "site": "tcp"
+      }
+    ],
+    "capabilities": {
+      "simulation": true,
+      "fk": true,
+      "ik": true,
+      "actuator_control": true,
+      "end_effector": true
+    }
+  },
+  "expect": {
+    "linkCount": 5,
+    "jointCount": 4,
+    "movableJointCount": 3,
+    "movableJointIds": [
+      "base_yaw",
+      "shoulder",
+      "elbow"
+    ],
+    "linkParent": {
+      "base": "world",
+      "shoulder_link": "joint:base_yaw",
+      "upper_arm": "joint:shoulder",
+      "forearm_link": "joint:elbow",
+      "ee_link": "joint:ee_link_fixed"
+    },
+    "jointParent": {
+      "base_yaw": "link:base",
+      "shoulder": "link:shoulder_link",
+      "elbow": "link:upper_arm",
+      "ee_link_fixed": "link:forearm_link"
+    },
+    "depthFirstOrder": [
+      "world",
+      "link:base",
+      "joint:base_yaw",
+      "link:shoulder_link",
+      "joint:shoulder",
+      "link:upper_arm",
+      "joint:elbow",
+      "link:forearm_link",
+      "joint:ee_link_fixed",
+      "link:ee_link"
+    ],
+    "axes": {
+      "base_yaw": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "shoulder": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "elbow": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "ee_link_fixed": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    "jointOrigins": {
+      "base_yaw": [
+        0.0,
+        0.0,
+        0.084
+      ],
+      "shoulder": [
+        0.0,
+        0.0,
+        0.052
+      ],
+      "elbow": [
+        0.103,
+        0.0,
+        0.0
+      ],
+      "ee_link_fixed": [
+        0.065,
+        0.0,
+        0.0
+      ]
+    },
+    "endEffectors": [
+      {
+        "id": "main_ee",
+        "link": "ee_link",
+        "position": [
+          0.032,
+          0.0,
+          0.0
+        ],
+        "site": "tcp"
+      }
+    ],
+    "frames": [
+      {
+        "id": "world",
+        "parent": "world"
+      },
+      {
+        "id": "base",
+        "parent": "world"
+      },
+      {
+        "id": "tcp_frame",
+        "parent": "ee_link"
+      }
+    ],
+    "geometry": {
+      "base": [
+        {
+          "type": "cylinder",
+          "size": [
+            0.055,
+            0.012
+          ],
+          "position": [
+            0.0,
+            0.0,
+            0.012
+          ]
+        },
+        {
+          "type": "cylinder",
+          "size": [
+            0.02,
+            0.03
+          ],
+          "position": [
+            0.0,
+            0.0,
+            0.054
+          ]
+        }
+      ],
+      "shoulder_link": [
+        {
+          "type": "box",
+          "size": [
+            0.028,
+            0.024,
+            0.026
+          ],
+          "position": [
+            0.0,
+            0.0,
+            0.026
+          ]
+        },
+        {
+          "type": "cylinder",
+          "size": [
+            0.018,
+            0.03
+          ],
+          "position": [
+            0.0,
+            0.0,
+            0.026
+          ]
+        }
+      ],
+      "upper_arm": [
+        {
+          "type": "capsule",
+          "size": [
+            0.016,
+            0.048
+          ],
+          "position": [
+            0.055,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "type": "sphere",
+          "size": [
+            0.02
+          ],
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "forearm_link": [
+        {
+          "type": "capsule",
+          "size": [
+            0.013,
+            0.03
+          ],
+          "position": [
+            0.035,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "type": "sphere",
+          "size": [
+            0.017
+          ],
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "ee_link": [
+        {
+          "type": "box",
+          "size": [
+            0.008,
+            0.014,
+            0.014
+          ],
+          "position": [
+            0.008,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "type": "box",
+          "size": [
+            0.012,
+            0.003,
+            0.005
+          ],
+          "position": [
+            0.02,
+            0.01,
+            0.0
+          ]
+        },
+        {
+          "type": "box",
+          "size": [
+            0.012,
+            0.003,
+            0.005
+          ],
+          "position": [
+            0.02,
+            -0.01,
+            0.0
+          ]
+        }
+      ]
+    },
+    "rootLink": "base",
+    "baseFrame": "base",
+    "dof": 3
+  }
+}

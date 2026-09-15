@@ -1,0 +1,263 @@
+<!--
+  ====================================================================
+  mini_arm · native MJCF  (RobotForge v0.1 validation robot)
+  =============================================================================
+  坐标约定（P0 契约，docs/coordinate-system.md §2）：
+      +X = Forward (前)      +Y = Left (左)      +Z = Up (上)      右手系
+      ⇒ 本模型**无需任何坐标转换**，Loader 的转换矩阵是单位矩阵。
+
+  单位：SI —— 长度 m / 角度 rad（MJCF 的 angles 默认就是 rad）/ 时间 s
+
+  关节正方向：右手定则（P0 契约 §2.3）
+
+  结构（3 DOF，平面 2R + 底座偏航）：
+      base  ──[base_yaw]──▶ shoulder_link ──[shoulder]──▶ forearm_link
+                                                        ──[elbow]──▶ ee_link
+
+      base_yaw : 绕 Z（垂直轴偏航，-180°..180°）
+      shoulder : 绕 Y（肩部俯仰，-90°..90°）      ← Rotation uses Y as the pitch axis
+      elbow    : 绕 Y（肘部俯仰，-135°..135°）
+
+  ⚠️ 为什么 shoulder/elbow 的轴是 Y 而不是 X
+     坐标约定是 +X前 / +Y左 / +Z上。绕 **Y** 旋转会让连杆在 **XZ 平面**内运动
+     （即"前后上下"地摆动）—— 这正是机械臂俯仰所需的平面。
+     若写成绕 X 旋转，连杆会在 YZ 平面内摆动 = 左右摆动，
+     那对平面 2R 机械臂是错的（工作空间会与 FK/IK 的推导不一致）。
+     这是本型号最容易配错的一处，故在此显式说明。
+
+  ⚠️ 惯性参数的处理（P0 契约 §3.9：不要伪造）
+     各 link 只声明 mass 与 pos，**刻意不写** diaginertia。
+     原因：本模型的目的不是物理精确，而是验证架构链路。
+     由 MuJoCo 按 geom 自动估算惯量，比我们手填一个"看起来合理"的数字更诚实 ——
+     手填的数字一旦被当成真值，就会在后续仿真里产生无法解释的力矩差异。
+     注：MuJoCo 要求非世界 body 必须有正质量，故 geometry 采用 box/cylinder
+     让它的自动估算有依据。
+  ====================================================================
+-->
+<mujoco model="mini_arm">
+
+  <!-- ===============================================================
+       compiler
+       - angle="radian"  : 与 P0 契约的 angle=rad 一致（MJCF 默认也是 radian，
+                           显式写出是为了让"不受默认值变化影响"这件事可读）
+       - autolimits="true" : 有 range 的关节自动启用 limit（避免"写了 range 但没生效"）
+       - inertiafromgeom : 未显式声明 diaginertia 时按 geom 估算（见文件头说明）
+       =============================================================== -->
+  <compiler angle="radian" autolimits="true" inertiafromgeom="true"/>
+
+  <!-- ===============================================================
+       contact · 关闭**同一棵运动链内部**的碰撞
+       =============================================================== -->
+  <!--
+       ★ 这不是"为了跑通而关掉检查"，是**修掉一个真实的建模缺陷**。
+
+       问题（实测）：
+         `shoulder` 命令到 +90°（1.5708 rad，正是它 range 的上限）时，
+         关节**停在了 0.9367 rad（约 53.7°）**，看数字像是"限位没生效"，
+         实际是**自碰撞**：
+             contact: upper_arm_link <-> base_column, dist = -0.0013
+         立柱（base_column，顶面 z = 0.084）与上臂（半径 0.016 的胶囊）
+         几何上互相干涉，于是接触约束顶住了关节，比 joint range 早了 0.634 rad。
+
+       为什么"关掉自碰撞"是对的而不是偷懒：
+         ① 本模型是**运动学验证机器人**：capabilities 只声明了
+            simulation / fk / ik / actuator_control / end_effector，
+            **没有** collision 能力。用一个未被声明的碰撞体去限制
+            一个已被声明的关节限位，是让模型自己打自己的脸。
+         ② 几何尺寸本来就是**为了好看**而选的（圆柱立柱、胶囊上臂），
+            它们从未按干涉校核设计过。让视觉几何参与物理 = 让"造型"
+            变成"运动范围"，这是把两件事焊在了一起。
+         ③ MuJoCo 对**相邻**（父-子）几何默认会过滤，但对**隔代**的几何
+            （upper_arm 与 base）不做过滤 —— 这是 MJCF 的默认行为，
+            需要模型作者显式声明语义。
+
+       何时应该**删掉**这段：当这个模型真的要做抓取/放置仿真时。
+       那时应当新写一份 MJCF（或单独声明真实的碰撞外壳），
+       而不是在同一条运动链里递归碰撞。
+
+       ⚠️ `exclude` 必须逐对列出：MJCF 没有"排除同一棵树的所有几何"的写法，
+          因为那样会连"末端碰到自己的底座"这种真实干涉一起关掉。
+          逐对列出 = 每一对被排除的接触都是一个**有意的决定**。
+
+       ⚠️ XML 注释里不能出现连续两个连字符，上面用 `=======` 而不是横线做分隔，
+          就是为了避开这条语法限制（这个警告本身在首版里踩了同一个坑）。
+  -->
+  <contact>
+    <!-- 立柱与肩部回转体（同轴，几何上必然互相穿模） -->
+    <exclude body1="base" body2="shoulder_link"/>
+    <!-- 立柱与上臂：就是上面实测到的那一对 -->
+    <exclude body1="base" body2="upper_arm"/>
+    <!-- 底座与远端连杆：折叠到底时才会碰上，同样属于"造型干涉" -->
+    <exclude body1="base" body2="forearm_link"/>
+    <exclude body1="base" body2="ee_link"/>
+    <!-- 肩部与上臂是父-子关系（MuJoCo 默认已过滤），显式写出让意图可读 -->
+    <exclude body1="shoulder_link" body2="upper_arm"/>
+    <!-- 上臂与其内部的前臂/末端：肘部折到底时的造型干涉 -->
+    <exclude body1="upper_arm" body2="forearm_link"/>
+    <exclude body1="upper_arm" body2="ee_link"/>
+    <!-- 前臂与末端是父-子关系；末端指爪与前臂折叠时的干涉 -->
+    <exclude body1="forearm_link" body2="ee_link"/>
+  </contact>
+
+
+  <!-- 无重力版本差异：保持默认重力（0 0 -9.81），使 Sim2Sim 有意义 -->
+  <option gravity="0 0 -9.81" integrator="RK4" timestep="0.002"/>
+
+  <!-- ===============================================================
+       asset
+       材质只影响视觉，不参与物理。给每个连杆不同颜色，
+       使 Three.js 视图里能分辨"哪一段是哪一个 link"
+       （GeometryRef.rgba 的用途，见 robot-model.md §3.8）
+       =============================================================== -->
+  <asset>
+    <material name="mat_base"    rgba="0.30 0.35 0.42 1"/>
+    <material name="mat_shoulder" rgba="0.25 0.55 0.75 1"/>
+    <material name="mat_forearm" rgba="0.35 0.72 0.55 1"/>
+    <material name="mat_ee"      rgba="0.92 0.60 0.25 1"/>
+  </asset>
+
+  <worldbody>
+    <!-- ====================================================================
+         base · 机器人根 Link（root_link = "base"）
+         视觉上是一个落地底座，为整个臂提供基座参考系
+         ==================================================================== -->
+    <body name="base" pos="0 0 0">
+      <inertial pos="0 0 0.012" mass="0.60"/>
+      <geom name="base_geom" type="cylinder" size="0.055 0.012"
+            pos="0 0 0.012" material="mat_base"/>
+
+      <!-- base 的参考坐标系（base_frame = "base"），供 Three.js 与 UI 显示坐标轴 -->
+      <site name="base_origin" pos="0 0 0" size="0.004" rgba="0.9 0.9 0.9 1"/>
+
+      <!-- base_link 末端处的顶面 site，用于视觉上标记立柱顶端 -->
+      <geom name="base_column" type="cylinder" size="0.020 0.030"
+            pos="0 0 0.054" material="mat_base"/>
+
+      <!-- ================================================================
+           关节 1：base_yaw —— 绕 Z 轴的偏航（底座回转）
+           位置：立柱顶端 (0, 0, 0.084)
+           ================================================================ -->
+      <body name="shoulder_link" pos="0 0 0.084">
+        <!-- ★ armature（转子惯量）不是可选装饰，是**数值稳定性的前提**。
+             位置型执行器把 kp 直接当刚度用，约束等效频率 ω = sqrt(kp / I)。
+             近端关节在零位形下绕轴惯量极小（I ≈ 1e-4 kg·m² 量级），
+             于是 ω = sqrt(60 / 1e-4) ≈ 775 rad/s，而显式积分要求
+             ω·dt < 2 —— 在 dt = 0.002 时 ω·dt ≈ 1.55，已逼近失稳边界，
+             实测：**仿真 1 步后 QACC/QVEL 溢出为 NaN**。
+             加上小转子惯量后 I 提高到 1e-2 量级，ω·dt ≈ 0.15，
+             留出约 10 倍余量。这与真实伺服电机"转子惯量不可忽略"一致，
+             所以它是**物理建模修正**，不是给数值打补丁。
+             改大 armature 会明显减慢响应（实测 armature=0.5 时超调），
+             故取 0.01 这一档。 -->
+        <joint name="base_yaw" type="hinge" axis="0 0 1"
+               pos="0 0 0" range="-3.14159265358979 3.14159265358979"
+               damping="0.10" frictionloss="0.01" armature="0.01"/>
+        <inertial pos="0 0 0.030" mass="0.35"/>
+        <!-- 肩部总成：一个立起来的方形块 -->
+        <geom name="shoulder_block" type="box" size="0.028 0.024 0.026"
+              pos="0 0 0.026" material="mat_shoulder"/>
+        <geom name="shoulder_hub" type="cylinder" size="0.018 0.030"
+              pos="0 0 0.026" quat="0.70710678 0.70710678 0 0"
+              material="mat_shoulder"/>
+
+        <!-- ============================================================
+             关节 2：shoulder —— 绕 Y 轴的俯仰（肩部）
+             位置：肩部块顶端 (0, 0, 0.052) 相对 shoulder_link 原点
+             ★ axis = 0 1 0 ⇒ 连杆在 XZ 平面内摆动（见文件头说明）
+             ============================================================ -->
+        <body name="upper_arm" pos="0 0 0.052">
+          <joint name="shoulder" type="hinge" axis="0 1 0"
+                 pos="0 0 0" range="-1.57079632679490 1.57079632679490"
+                 damping="0.08" frictionloss="0.01" armature="0.01"/>
+          <inertial pos="0.055 0 0" mass="0.22"/>
+          <!-- 上臂：沿 +X 伸出的长条（+X 是"前方"） -->
+          <geom name="upper_arm_link" type="capsule" size="0.016 0.048"
+                pos="0.055 0 0" quat="0.70710678 0 0.70710678 0"
+                material="mat_forearm"/>
+          <geom name="shoulder_joint_cap" type="sphere" size="0.020"
+                pos="0 0 0" material="mat_shoulder"/>
+
+          <!-- ========================================================
+               关节 3：elbow —— 绕 Y 轴的俯仰（肘部）
+               位置：上臂末端 (0.103, 0, 0)
+               ======================================================== -->
+          <body name="forearm_link" pos="0.103 0 0">
+            <joint name="elbow" type="hinge" axis="0 1 0"
+                   pos="0 0 0" range="-2.35619449019234 2.35619449019234"
+                   damping="0.06" frictionloss="0.01" armature="0.01"/>
+            <inertial pos="0.035 0 0" mass="0.14"/>
+            <geom name="forearm_link_geom" type="capsule" size="0.013 0.030"
+                  pos="0.035 0 0" quat="0.70710678 0 0.70710678 0"
+                  material="mat_forearm"/>
+            <geom name="elbow_joint_cap" type="sphere" size="0.017"
+                  pos="0 0 0" material="mat_forearm"/>
+
+            <!-- ====================================================
+                 末端连杆 · 承载 EndEffector 的 frame 与 site
+                 ★ 这里**没有**关节 ⇒ ee_link 与 forearm_link 刚性固连
+                   （MJCF 里"无 joint 的 body"就是 fixed joint，
+                     Loader 会为它合成一个 type="fixed" 的 Joint 条目，
+                    以保持 RobotModel 的 Link-Joint alternation 契约）
+                 ==================================================== -->
+            <body name="ee_link" pos="0.065 0 0">
+              <inertial pos="0.008 0 0" mass="0.05"/>
+              <geom name="ee_palm" type="box" size="0.008 0.014 0.014"
+                    pos="0.008 0 0" material="mat_ee"/>
+              <!-- 两个"手指"（纯视觉，v0.1 不实现夹爪自由度） -->
+              <geom name="ee_finger_a" type="box" size="0.012 0.003 0.005"
+                    pos="0.020 0.010 0" material="mat_ee"/>
+              <geom name="ee_finger_b" type="box" size="0.012 0.003 0.005"
+                    pos="0.020 -0.010 0" material="mat_ee"/>
+
+              <!-- EndEffector 的 frame 参考点（ee_link 原点） -->
+              <site name="ee_frame_site" pos="0 0 0" size="0.003"
+                    rgba="1 0.8 0.2 1"/>
+              <!-- Tool Center Point：两指之间的中心，位于指端稍前 -->
+              <site name="tcp" pos="0.032 0 0" size="0.004"
+                    rgba="1 0.2 0.2 1"/>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <!-- ===============================================================
+       actuator
+       v0.1：`Joint ≈ Actuator`，但概念不合并（见 robot-model.md §3.6）。
+       每个可动关节配一个位置型执行器，joint 字段绑定到关节名。
+
+       ★ ctrlrange 与关节 range **刻意写成同一个值**：
+         它是"命令的取值范围"（Actuator 契约），而非关节的物理限位。
+         二者当前相等是因为 v0.1 没有减速比/映射表；
+         将来加 Actuator Mapping 时，这两个 range 会**分开**描述
+         （命令 -1..1 映射到关节 -π..π）。保留两个字段就是为了那一刻。
+       =============================================================== -->
+  <actuator>
+    <position name="base_yaw_motor" joint="base_yaw"
+              kp="60" kv="4"
+              ctrlrange="-3.14159265358979 3.14159265358979"/>
+    <position name="shoulder_motor" joint="shoulder"
+              kp="60" kv="4"
+              ctrlrange="-1.57079632679490 1.57079632679490"/>
+    <position name="elbow_motor" joint="elbow"
+              kp="60" kv="4"
+              ctrlrange="-2.35619449019234 2.35619449019234"/>
+  </actuator>
+
+  <!-- ===============================================================
+       sensor
+       只声明关节位置/速度传感器，供 Future 的数据采集能力使用。
+       v0.1 的 RobotState 直接从 MjData.qpos/qvel 读，不依赖 sensor 段；
+       但保留它让 MJCF 结构更接近"真实可用的机器人模型"。
+       =============================================================== -->
+  <sensor>
+    <jointpos name="base_yaw_pos" joint="base_yaw"/>
+    <jointpos name="shoulder_pos" joint="shoulder"/>
+    <jointpos name="elbow_pos" joint="elbow"/>
+    <jointvel name="base_yaw_vel" joint="base_yaw"/>
+    <jointvel name="shoulder_vel" joint="shoulder"/>
+    <jointvel name="elbow_vel" joint="elbow"/>
+  </sensor>
+
+</mujoco>
