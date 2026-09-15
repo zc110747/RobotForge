@@ -51,7 +51,7 @@ model:
 
 # --- 运动学实现（包内，见 robot-package.md §5）-------------------------------
 kinematics:
-  # entry = 包内实现文件；v0.1 只有 Python 侧（前端用通用渲染器，无包内 TS 引擎）
+  # entry = 包内实现文件。Python 侧的两份由 Core / CLI 按 entry 动态加载。
   fk:
     type: package
     entry: kinematics/fk.py
@@ -62,6 +62,18 @@ kinematics:
     #   而数值解会引入迭代容差，让"往返测试通过"变成一件模糊的事。
     type: package
     entry: kinematics/ik.py
+  # ★ JS 侧实现（前端预演用）—— 与上面两份**互为裁判**，见 robot-package.md §5.3。
+  #
+  # 它**不参与 Core 的加载分派**（Core 不读这一段）：它是给前端与构建脚本的
+  # **指针**，让前端不必硬编码 "../../packages/mini_arm/kinematics/kinematics.js"
+  # 这种既脆弱又绕过 manifest 的路径。
+  #
+  # ⚠️ 刻意**不写** `type`：`type` 是 Core 加载分派的语义（core/package），
+  #    而 JS 侧由前端自己的打包器加载，套用同一套语义会产生误解
+  #    （例如让人以为 Core 也能把它当 package entry 动态 import）。
+  #    没有 `type` ⇒ `backend.cli show` 会正确地跳过它（见 cli.py 的渲染逻辑）。
+  js:
+    entry: kinematics/kinematics.js
 
 # --- 能力声明 ---------------------------------------------------------------
 # ★ Frontend 必须**据 capability 动态决定**显示哪些功能，

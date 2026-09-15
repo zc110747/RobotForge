@@ -198,6 +198,52 @@ IK  ✅ packages/mini_arm/kinematics/ik.py  （包内，机构特定）
 `manifest.yaml` 用 `kinematics.ik.type: package` 把这个边界**编码进数据**，
 而不是靠文档约定。
 
+### 6.1 前端预演：第三份实现（v0.1 后期新增）
+
+前端有"本地预演"（拖动滑块即时预测位形，不等后端往返），
+这需要一份能在浏览器里跑的 FK/IK：
+
+```text
+① backend/kinematics/fk.py                    通用链式（真读模型几何）
+② packages/mini_arm/kinematics/fk.py|ik.py    解析式（几何常量写死）
+③ packages/mini_arm/kinematics/kinematics.js  解析式的 **JS 移植**
+```
+
+③ 放在**包内**而不是前端，理由是"真值只有一处"：把 `L1/L2/公式`
+抄进 `frontend/src/` 会产生两份会漂移的数据，且新增机器人要改前端。
+
+**②↔③ 的判据**：`tools/export_kinematics_fixture.py` 从 Python 侧导出
+随机+边界位形的真值，`frontend/src/sim/__tests__/kinematics.check.ts`
+在 JS 侧逐点比对。实测偏差（v0.1）：
+
+```text
+FK 位置     1.96e-17 m      容差 1e-15
+IK 关节角   6.02e-15 rad    容差 1e-13   ← acos 在 x→±1 处导数发散，放大 ~27 ulp
+IK 位置误差 1.48e-16 m      容差 1e-14
+```
+
+> ⚠️ **③ 与 ② 一样不能证明"几何读对了 MJCF"** —— 它的几何也是写死的常量。
+> 几何正确性只由包内测试 + Core 那条路径负责。详见 `docs/robot-package.md` §5.3。
+
+### 6.2 ⚠️ 前端预演**不得**成为权威姿态来源（§49）
+
+预演是"我猜后端会算成什么样"，**不是**"机器人现在在哪"。
+因此有一条硬边界：
+
+```text
+✅ 权威姿态：唯一来自 WS 的 robot_state（后端产出的 State）
+✅ 预演姿态：画成半透明 ghost / 只用于面板显示，与权威树分离
+❌ 禁止：把前端 FK 的结果直接写进 Three.js 的权威节点
+```
+
+理由：那会让 `State ≡ Command`，于是 §62「FK 与 MuJoCo 一致」变成
+同义反复，而 MuJoCo 的限幅与积分被整个绕过 ——
+机械臂会在屏幕上"听话"，而真机 / 仿真里根本不是那个位形。
+
+**对账机制**：预演值与权威值偏差超过阈值时，丢弃预测、改用权威值，
+并标记 `source: "authoritative"`。这防止本地模型与真实物理持续分叉
+却仍然显示"我算的"。
+
 ---
 
 ## 7. 坐标与单位在哪里转换

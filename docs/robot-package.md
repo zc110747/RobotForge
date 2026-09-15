@@ -144,8 +144,9 @@ mini_arm 的 MJCF 里有 8 对 `<contact><exclude>` 排除自碰撞，
 ## 5. 包内 `kinematics/` 的边界
 
 ```text
-fk.py      ✅ 包内可以放，但必须**重导出** Core 的实现
-ik.py      ✅ 包内实现（闭式解依赖机构）
+fk.py            ✅ 包内可以放，但必须**重导出** Core 的实现
+ik.py            ✅ 包内实现（闭式解依赖机构）
+kinematics.js    ✅ 包内实现（闭式解的 **JS 移植**，供前端预演）—— 见 §5.3
 ```
 
 ### 5.1 为什么 `fk.py` 是"解析闭式解 + Core 重导出"两份
@@ -186,6 +187,84 @@ kinematics:
 
 Core 按这个指针定位文件并取函数。**不得**在 Core 里硬编码
 `packages/mini_arm/kinematics/ik.py` —— 那样"加一个机器人"就必须改 Core。
+
+### 5.3 JS 侧 `kinematics.js` 的边界（v0.1 后期新增）
+
+**背景**：前端需要"本地预演"（拖动滑块时即时预测位形，不等后端往返）。
+预演要算 FK/IK，于是需要一份**能在浏览器里跑**的实现。
+
+**为什么放在包内而不是前端**
+
+```text
+✅ 包内  几何真值、公式、限位都在包内 → 前端 import 它，不产生第二份真值
+❌ 前端  把 L1/L2/公式抄进 frontend/src/ → 两份会漂移，且新增机器人要改前端
+```
+
+**三份实现的分工（判据见 §5.3.2）**
+
+```text
+① backend/kinematics/fk.py          通用链式：遍历 joint 链逐级 compose（真读模型几何）
+② packages/.../kinematics/fk.py     解析式：手推三角，几何常量写死
+③ packages/.../kinematics/kinematics.js   解析式的 JS 移植
+```
+
+①↔② 互证已被 `packages/mini_arm/tests/` 钉住；
+②↔③ 由 `tools/export_kinematics_fixture.py` + `frontend/src/sim/__tests__/kinematics.check.ts`
+逐点比对（实测最大偏差见该脚本输出）。
+
+#### 5.3.1 ⚠️ JS 侧**不能**用来证明"几何读对了 MJCF"
+
+③ 与 ② 一样，几何长度是**文件内写死的常量**。因此：
+
+```text
+✅ ③ 能证明：前端算出的位姿与后端一致（预演不会显示别的位姿）
+❌ ③ 不能证明：写死的常量与 MJCF 一致
+```
+
+几何正确性由 `packages/mini_arm/tests/test_kinematics_facts.py`
+（常量 vs MJCF 逐项断言）与 Core 那条路径负责。
+**要验证"FK 真的依赖几何"，必须用 Core 的 `forward_kinematics_generic`。**
+
+#### 5.3.2 为什么是三份而不是两份
+
+多一份就多一处要维护，**只有当它能当裁判时才值得**：
+
+```text
+①↔②  证明 Core 的链乘没写错
+②↔③  证明前端预演不会算出与后端不同的位姿
+①↔③  （间接）三方一致比两方一致更难被"共同的错误假设"骗过
+```
+
+判据的关键在于 ③ 必须是**独立移植公式**，而不能是
+"把 Python 的输出预先烧成表" —— 烧好的表不是裁判，
+是一条会与真值静默漂移的缓存。
+
+#### 5.3.3 为什么是 `.js` 而不是 `.ts`
+
+包是**与语言无关的数据包**，不该假设消费方用 TypeScript。
+
+```text
+.js + JSDoc 类型注释  →  浏览器 / Node / Vite / 任何打包器都能直接吃
+.ts                  →  强制消费方有 TS 工具链，且包内多一个构建步骤
+```
+
+实测（v0.1 环境）：Vite 5 dev / `tsc --noEmit` / `vite build` 三条路径
+都能直接 import 这个文件，**不需要** `server.fs.allow`，也不需要改 `vite.config.ts`。
+
+#### 5.3.4 `manifest.kinematics.js` 段**不带** `type`
+
+```yaml
+kinematics:
+  js:
+    entry: kinematics/kinematics.js   # ← 没有 type
+```
+
+`type` 是 **Core 加载分派**的语义（`core` / `package`）。
+JS 侧由前端自己的打包器加载，不经过 Core。套用同一套语义会造成误解
+（例如让人以为 Core 也能把它当 package entry 动态 import）。
+
+没有 `type` ⇒ `backend.cli show` 会正确地跳过它（渲染逻辑只在 `type` 存在时打印）。
+
 
 ---
 
