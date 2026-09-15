@@ -145,6 +145,89 @@ armature="0.01"（三个关节全加）
 
 ---
 
+## 5.1 前端闭环契约（§49 前端出口，**别改回去**）
+
+```text
+frontend/src/ws.ts                      §49 前端出入口（唯一）
+frontend/src/JointPanel.tsx             §59 命令面板
+frontend/src/sim/predictor.ts           纯函数预演层（无 React）
+frontend/src/sim/useGhostPrediction.ts  预演驱动（React hook）
+frontend/src/App.tsx                    接线：链路面板 + 两个开关
+```
+
+### 命令语义
+- **命令是"持续目标"，不是一次性脉冲**。hook 里**不清空** `pendingRef.current`。
+  曾经每帧清空 ⇒ 命令只推进一帧（实测值停在 `0.117503`）。
+  换模型后旧命令由 `advance()` 的"关节不存在则忽略"语义自然丢弃，无需显式清。
+- **前端不夹紧命令**。限幅是后端职责（`clamp_targets_to_limits`）。
+  前端也夹 ⇒ "命令超限"这条信息丢失（用户看到滑块停在边界，却不知道是
+  自己拖超了还是模型只有这个范围）。预演**内部**夹是为了画得合理，不改命令。
+- `JointPanel.send()` 每次只发**一条只含该关节**的命令（避免把别的关节的
+  陈旧滑块值一起推上去）。
+- `commandableJoints()` 只挑 `revolute`/`prismatic` —— **`fixed` 必须显式排除**。
+
+### 预演驱动（`useGhostPrediction`）
+```text
+dt = 真实帧间隔并夹上限 MAX_DT = 0.1（不是固定 1/60）
+回帧对账只在 authoritative **引用变化**时（不是每帧）
+渲染节流 SETTLE_EPS = 1e-5 + 先无条件推进 predRef、再按可见性 setState
+```
+- **顺序不能反**：反了 ⇒ 值变了但界面不动。缺 `SETTLE_EPS` ⇒ 收敛后每帧重渲染
+  （`next !== cur` 恒为真）。
+- `modelHash` 用 `model.metadata?.id`（**不是**顶层 `robot` —— `RobotModelDTO`
+  只有 `metadata`）。
+- `jointIds` 传参必须**引用稳定**（`App.tsx` 用 `EMPTY_IDS` 冻结常量）：
+  `vm?.movableJointIds ?? []` 每次渲染都是新数组 ⇒ effect 反复重跑 ⇒
+  预演初值反复重建 ⇒ 幽灵臂永远归零。
+
+### ★ 两个被实测抓到的真 bug
+
+#### A. `<React.StrictMode>` 的 effect 交错 ⇒ 页面**永远**连不上
+```text
+开发模式 effect：mount → connect ｜ unmount → dispose ｜ mount → connect
+```
+`dispose()` 把 `disposed` 永久置真，第二次 `connect()` 撞上 `if (disposed) return`
+⇒ 永不建连。**症状与"服务器拒绝连接"完全同形**（面板"未连接"）。
+真话在控制台：`WebSocket is closed before the connection is established`。
+**决定性对照实验**：在页面里手动 `new WebSocket(...)` **成功** ⇒ 一次性排除
+"地址 / vite 代理 / 后端"三个方向。**这一招比读十遍代码快。**
+
+修法两层，缺一不可：
+1. `connect()` 开头清 `disposed`（语义收窄为"**当前**这一轮已被主动关闭"，
+   不是"这个客户端对象作废了"）；
+2. **代际号 `generation`**：`connect()` 里 `const gen = ++generation`，
+   open/message/close 与 `scheduleReconnect(gen)` 全部校验 `gen === generation`；
+   `dispose()` 递增代际让在飞回调自废。
+
+> `disposed` 是布尔 —— 只能答"现在这轮是不是关了"，**答不了"这个回调属于哪一轮"**。
+> 旧轮次的 socket close / 旧定时器会在新一轮已开着时才触发（此时
+> `disposed === false`，只判布尔的守卫直接放行）⇒ 旧 close 把新 `socket`
+> 置 `null`（误杀），旧定时器再造一根（两根并存）。
+> **一般化**：可重复开启的会话 + 异步回调 ⇒ 必须有代际号/epoch，布尔不够。
+
+#### B. 四个独立 `useSyncExternalStore` ⇒ 字段之间失去一致性
+语法合法、单测也过，但四个订阅器分别收敛 —— React 对"快照没变"的那个跳过
+重渲染，字段一致性只能靠运气。**实测症状：连接状态显示"未连接"，但面板/滑块
+全都正常渲染**（大部分 UI 对，只有一处在撒谎，极具误导性）。
+修法：快照是**一个**引用稳定的对象，在 `notify()` 里**先重建、再通知**；
+顺序反了 ⇒ 订阅者读到旧快照 ⇒ React 跳过重渲染 ⇒ 界面停在旧状态。
+
+### 其它易错
+- `connect()` 里**不**复位退避延迟（复位只发生在真连上了）。
+  自检 `runBackoff` 抓到过回归：期望 `100,200,400,400,400` → 实得 `100,100,100,100,100`。
+- `jointPositions?: T | undefined`：本工程开了 `exactOptionalPropertyTypes`，
+  `?:` 只表示"可以不传"，**不**表示"可以显式传 undefined"（少了会在**调用点**
+  报 TS2375，看着像调用方写错）。
+- 自由度施加在**内层 `dof:<jointId>` group**（不并进外层，否则 §41 断言变自证）；
+  幽灵臂必须在**同一个** `threejs-adapter-root` 内（第二个 adapter-root 会让
+  两棵树基准漂开 ⇒ 表现成"幽灵臂慢慢错位"）。
+- 断线**不清空** `lastState`（`end_effector_pose = None` ≠ `Transform.identity()`）。
+- `error` 事件**不**触发重连（error 后浏览器总会再给 close，两次改状态会导致
+  "再连被 `socket !== null` 挡掉" ⇒ 断线后再也连不上）。
+- JSON 按 RFC 8259 收严：`NaN`/`Infinity` 必须拒绝。
+
+---
+
 ## 6. 判据写法铁律：完整案例
 
 ### 铁律一案例：mini_arm 往返定律（全网格 11³ 双向验证，交叉项为 0）
