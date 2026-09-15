@@ -180,6 +180,15 @@ MUJOCO_LOG.TXT
 .workbuddy/scratch/
 .workbuddy/**/__pycache__/
 
+# 无头浏览器残留的 profile 目录。
+# ⚠️ 它们**不是**按 `.workbuddy/scratch/` 那种固定路径出现的 ——
+# Chromium 会在**自己的 cwd** 下建 `r3/`（profile 名的一部分）等目录，
+# 于是会直接落在仓库根，把整个仓库变成一堆二进制垃圾。
+# 验收脚本已经用 `resolve()` 把 profile 固定到 scratch 下（见
+# `tools/e2e_browser_check.mjs`），这里再兜一层，防止将来又跑偏。
+.workbuddy/r3/
+.workbuddy/**/Crashpad/
+
 # Spyder project settings
 .spyderproject
 .spyproject

@@ -31,31 +31,44 @@
  * 那会引入一份模型外的真值，且按名字上色必然要读 link id 做判断，
  * 离"型号分支"只有一步。
  *
- * ## 关于元数据属性（为什么同时有 `name` / `data-*` / `userData`）
+ * ## 关于节点标识：只用 `name`，**禁止 `data-*`**
  *
- * 三者各有其位，不是冗余：
+ * ⚠️ 本文件曾经在 `<group>` 上同时挂 `data-kind` / `data-id`，
+ *    理由是"静态渲染（`renderToStaticMarkup`）下它们会原样保留成字符串"。
+ *    **这个理由只在 DOM 渲染器下成立；在真实浏览器里它会让整个场景崩掉。**
  *
- *   | 属性          | 真实浏览器（fiber）      | renderToStaticMarkup |
- *   |---------------|--------------------------|----------------------|
- *   | `name`        | `Object3D.name`（正确）  | 原样保留（字符串）   |
- *   | `data-kind/id`| 无意义（非 Three 属性）  | 原样保留（字符串）   |
- *   | `userData`    | `Object3D.userData`（可拾取）| **退化成 `[object Object]`** |
+ * 根因（已实测定位到 r3f 源码）：
  *
- * 结论：
- *   - 检查与调试只依赖前两者（字符串 ⇒ 可序列化 ⇒ 可核对）
- *   - `userData` 保留是因为它在真实 fiber 场景里是对的
+ * ```text
+ * @react-three/fiber 的 diffProps 里有一条：
+ *     if (key.includes("-")) entries2 = key.split("-");
+ * 于是 `data-kind` 被拆成 ["data", "kind"]，
+ * 接着 applyProps 执行：
+ *     targetProp = keys.reduce((acc, k) => acc[k], instance)
+ *     // → instance.data  →  undefined
+ *     // → undefined["kind"]  →  TypeError: Cannot read properties of
+ *     //                        undefined (reading 'kind')
+ * ```
+ *
+ * 症状极具误导性：报错栈里全是 `chunk-*.js` 与 `<group>`，
+ * **完全看不到本文件**；且它发生在 React 渲染期，
+ * `ErrorBoundary` 捕获后整棵树重挂载 → 页面 **全黑**
+ * （`#root` 的 innerHTML 为空、`canvas`/`.panel` 都查不到）。
+ * 于是所有基于 DOM 查询的断言一起失败，看起来像"后端没起"或"前端挂了"。
+ *
+ * ⇒ 结论：**Three.js fiber 元素上的属性名不得含 `-`**。
+ *   需要携带元数据时用 `name`（`Object3D.name`，真实可用）
+ *   或 `userData`（对象，真实可用）。两者在静态渲染下会退化，
+ *   但静态渲染本来就不是本组件的运行环境，**以浏览器里的正确性为准**。
+ *
+ * ## 其余两条约定仍然成立
+ *
  *   - ⚠️ 任何**对象**属性在静态渲染里都会变成 `[object Object]`，
- *     所以 position / quaternion 也一律传**数字数组**（见 GeomMesh 注释）
- *
- * ## 静态渲染里的两个"警告"是假警报，不要照着改
- *
- * `renderToStaticMarkup` 走 React DOM，没有 fiber reconciler，因此：
- *   1. `<meshStandardMaterial/>` 会被当成未知 **HTML** 元素，
- *      React 报 "incorrect casing" ⇒ 在真实 fiber 场景里小写名是**正确且必需**的
- *   2. `userData` 报 "does not recognize" ⇒ 同上，只在静态渲染下成立
- *
- * 这两条**不是缺陷**，是"用 DOM 渲染器渲染非 DOM 树"的固有副作用。
- * 照着警告改成 PascalCase 反而会把浏览器里的渲染改坏。
+ *     所以 position / quaternion 一律传**数字数组**（见 GeomMesh 注释）
+ *   - ⚠️ 同理，`<meshStandardMaterial/>` 等小写元素名在
+ *     `renderToStaticMarkup` 下会被当成未知 **HTML** 元素并报
+ *     "incorrect casing" —— 这是"用 DOM 渲染器渲染非 DOM 树"的固有副作用，
+ *     **不是缺陷**。在真实 fiber 场景里小写名是正确且必需的。
  */
 
 import { useMemo, useEffect } from "react";
@@ -231,10 +244,12 @@ function NodeView({
   vm,
   node,
   eeByLink,
+  showAxes,
 }: {
   vm: RobotViewModel;
   node: RenderNode;
   eeByLink: ReadonlyMap<string, readonly string[]>;
+  showAxes: boolean;
 }): ReactNode {
   // link 相对父 joint 恒等（位移由 joint 的 origin 承担）。
   // ★ 用数字数组而非 Vector3 —— 让数值在渲染产物里可见（见 GeomMesh 注释）。
@@ -269,15 +284,6 @@ function NodeView({
   return (
     <group
       name={node.key}
-      // ★ 用**两个字符串**属性而不是一个 `userData` 对象，理由见本文件
-      //   "关于元数据属性"一节：对象属性在静态渲染里会退化成
-      //   "[object Object]"，既不可读也不可查；字符串属性则原样保留。
-      //
-      //   真实 fiber 场景里 `userData` 是有用的（射线拾取），所以这里
-      //   同时保留它 —— 但检查与调试只依赖上面两个字符串。
-      userData={{ kind: node.kind, id: node.id }}
-      data-kind={node.kind}
-      data-id={node.id}
       position={posArr}
       quaternion={quatArr}
     >
@@ -291,12 +297,12 @@ function NodeView({
       ))}
 
       {/* joint：画轴指示器（fixed 关节不画 —— 它没有自由度，画了会误导） */}
-      {node.kind === "joint" && node.axis !== null && node.isMovable && (
+      {showAxes && node.kind === "joint" && node.axis !== null && node.isMovable && (
         <AxisIndicator axis={node.axis} />
       )}
 
       {childNodes.map((c) => (
-        <NodeView key={c.key} vm={vm} node={c} eeByLink={eeByLink} />
+        <NodeView key={c.key} vm={vm} node={c} eeByLink={eeByLink} showAxes={showAxes} />
       ))}
     </group>
   );
@@ -399,11 +405,16 @@ export function RobotScene({
   return (
     <group name="robot-root">
       {roots.map((r) => (
-        <NodeView key={r.key} vm={vm} node={r} eeByLink={showEndEffector ? eeByLink : new Map()} />
+        <NodeView
+          key={r.key}
+          vm={vm}
+          node={r}
+          eeByLink={showEndEffector ? eeByLink : new Map()}
+          showAxes={showAxes}
+        />
       ))}
 
       {showWorldFrame && <FrameAxes scale={0.12} />}
-      {!showAxes && <group name="__axes_hidden" />}
     </group>
   );
 }

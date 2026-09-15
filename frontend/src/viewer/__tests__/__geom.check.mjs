@@ -114,7 +114,8 @@ function AxisIndicator({
 function NodeView({
   vm,
   node,
-  eeByLink
+  eeByLink,
+  showAxes
 }) {
   const { posArr, quatArr } = useMemo(() => {
     if (node.kind === "link" && node.parentKey !== null) {
@@ -135,16 +136,13 @@ function NodeView({
     "group",
     {
       name: node.key,
-      userData: { kind: node.kind, id: node.id },
-      "data-kind": node.kind,
-      "data-id": node.id,
       position: posArr,
       quaternion: quatArr,
       children: [
         node.kind === "link" && node.geometries.map((g, i) => /* @__PURE__ */ jsx(GeomMesh, { g }, `${node.key}-g${i}`)),
         eeIdsHere.map((eeId) => /* @__PURE__ */ jsx(EndEffectorMarker, { vm, eeId }, `ee-${eeId}`)),
-        node.kind === "joint" && node.axis !== null && node.isMovable && /* @__PURE__ */ jsx(AxisIndicator, { axis: node.axis }),
-        childNodes.map((c) => /* @__PURE__ */ jsx(NodeView, { vm, node: c, eeByLink }, c.key))
+        showAxes && node.kind === "joint" && node.axis !== null && node.isMovable && /* @__PURE__ */ jsx(AxisIndicator, { axis: node.axis }),
+        childNodes.map((c) => /* @__PURE__ */ jsx(NodeView, { vm, node: c, eeByLink, showAxes }, c.key))
       ]
     }
   );
@@ -199,9 +197,17 @@ function RobotScene({
     return m;
   }, [vm]);
   return /* @__PURE__ */ jsxs("group", { name: "robot-root", children: [
-    roots.map((r) => /* @__PURE__ */ jsx(NodeView, { vm, node: r, eeByLink: showEndEffector ? eeByLink : /* @__PURE__ */ new Map() }, r.key)),
-    showWorldFrame && /* @__PURE__ */ jsx(FrameAxes, { scale: 0.12 }),
-    !showAxes && /* @__PURE__ */ jsx("group", { name: "__axes_hidden" })
+    roots.map((r) => /* @__PURE__ */ jsx(
+      NodeView,
+      {
+        vm,
+        node: r,
+        eeByLink: showEndEffector ? eeByLink : /* @__PURE__ */ new Map(),
+        showAxes
+      },
+      r.key
+    )),
+    showWorldFrame && /* @__PURE__ */ jsx(FrameAxes, { scale: 0.12 })
   ] });
 }
 export {

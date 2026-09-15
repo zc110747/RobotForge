@@ -399,27 +399,67 @@ function checkMarkupStructure(
     ok(findGroup([tree], n.key) !== null, `渲染产物里有 group name="${n.key}"`, "找不到");
   }
 
-  // ★ 元数据属性必须落在**字符串**字段上（`data-kind` / `data-id`）。
+  // ★★ 节点标识只能落在 `name` 上；**禁止 `data-*`**。
   //
-  // 为什么单独查这个：本文件曾依赖 `userData={{kind, id}}`，但对象属性在
-  // 静态渲染里退化成 `[object Object]` ⇒ 拿不到 kind/id。改用字符串属性后
-  // 它们原样出现在产物里，**可以被核对**。这条断言就是在钉住这点：
-  // 谁把 data-kind 改回对象，这里立刻变红。
+  // ## 为什么这条断言必须写（血泪教训）
+  //
+  // 本文件曾经反过来：断言每个 group 带 `data-kind` / `data-id`，
+  // 理由是"对象属性在静态渲染里会退化成 `[object Object]`，
+  // 而字符串属性原样保留、可被核对"。
+  //
+  // **那个理由只在 DOM 渲染器下成立，在真实浏览器里是致命的。**
+  //
+  // `@react-three/fiber` 的 `diffProps` 里有：
+  //
+  //     if (key.includes("-")) entries2 = key.split("-");
+  //
+  // 于是 `data-kind` → `["data", "kind"]`，`applyProps` 接着执行
+  // `instance.data.kind`；而 `instance.data` 是 `undefined`
+  // ⇒ `TypeError: Cannot read properties of undefined (reading 'kind')`
+  // ⇒ ErrorBoundary 捕获 ⇒ 整棵树重挂载 ⇒ **页面全黑**。
+  //
+  // 实测后果：`pytest` 488 全绿、REST 全部 200、WS 探针 25/25 PASS，
+  // **而浏览器里什么都不显示**。这一层检查（静态渲染树）当时也全绿 ——
+  // 因为 DOM 渲染器不认识 fiber 的语义，把 `data-*` 当普通 HTML 属性放行了。
+  //
+  // ⇒ 正确的判据不是"标识能被序列化"，而是
+  //   **"标识落在 `name` 上，且没有任何属性名含 `-`"**。
+  //   后者才是与渲染器无关的真实约束。
   for (const n of vm.nodes) {
     if (n.kind === "world") continue;
     const grp = findGroup([tree], n.key);
     if (!grp) continue;
     ok(
-      grp.props["data-kind"] === n.kind,
-      `${n.key} 带 data-kind=${n.kind}（可序列化，非 [object Object]）`,
-      `实际 ${JSON.stringify(grp.props["data-kind"])}`
-    );
-    ok(
-      grp.props["data-id"] === n.id,
-      `${n.key} 带 data-id=${n.id}`,
-      `实际 ${JSON.stringify(grp.props["data-id"])}`
+      grp.props.name === n.key,
+      `${n.key} 的 group name 正确`,
+      `实际 name=${JSON.stringify(grp.props.name)}`
     );
   }
+
+  // 全局扫描：**任何**元素的属性名都不得含 `-`。
+  //
+  // 这条比逐节点断言强 —— 它覆盖"以后新增了一个节点/子元素忘了改"。
+  //
+  // ⚠️ 注意扫的是 `parseMarkup` 产出的元素树（`{name, props, children}`），
+  //    **不是** React 元素。一开始我按 React 元素写（找 `props.children`），
+  //    结果什么都没扫到 ⇒ 反例注入了却依然全绿 ⇒ 这是一条**恒真的假断言**。
+  //    教训与 `parseMarkup` 的存在本身一样：先用"已知答案的探针"验证
+  //    检查器能看见目标，再据此下结论。
+  const dashedProps: string[] = [];
+  const walk = (nodes: ElemNode[], path: string): void => {
+    for (const n of nodes) {
+      for (const k of Object.keys(n.props)) {
+        if (k.includes("-")) dashedProps.push(`${path}/${n.name}@${k}`);
+      }
+      walk(n.children, `${path}/${n.name}`);
+    }
+  };
+  walk(tree.children, "");
+  ok(
+    dashedProps.length === 0,
+    "渲染树里没有任何含 `-` 的属性名（fiber 按 `-` 拆路径 ⇒ 整个场景崩）",
+    `发现 ${dashedProps.length} 处：${dashedProps.slice(0, 3).join(", ")}`
+  );
 
   // 层级：子 group 必须出现在父 group 的子树里
   for (const n of vm.nodes) {

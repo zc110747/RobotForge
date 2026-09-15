@@ -1,0 +1,68 @@
+# =============================================================================
+# RobotForge v0.1 —— 项目与依赖声明（spec §56）
+# -----------------------------------------------------------------------------
+# ★ 为什么同时保留 requirements.txt（镜像文件）
+#   pyproject.toml 是**真值源**；requirements.txt 是给"只想 pip install -r"
+#   的读者用的扁平镜像。两者必须一致 —— 改了一处就要改另一处。
+#   之所以不删 requirements.txt：README §3 的快速开始直接引用它，
+#   而 v0.1 刻意**不走 `pip install -e .`**（见 pytest.ini 的 pythonpath 注释：
+#   "克隆即可跑测试"）。所以本项目只把 pyproject 当**元数据 + 依赖声明**，
+#   不依赖它的构建后端来安装包。
+#
+# ★ 为什么 python 要求 >= 3.11
+#   spec §45 明确 "Python 3.11+"。实际上包内模块用
+#   `importlib.util.spec_from_file_location` 动态加载 + `@dataclass`，
+#   在 3.13 下需要 `sys.modules[name] = mod` 才算得对 —— 见 docs/robot-package.md。
+#
+# ★ 为什么 [tool.pytest.ini_options] 是空壳
+#   配置真身留在 pytest.ini。pytest 的优先级是
+#   `pytest.ini` > `pyproject.toml [tool.pytest.ini_options]`，
+#   所以这里**不能**写第二份配置：写了两份就会有一份静默失效，
+#   而失效的那份看起来"我明明配了"。
+# =============================================================================
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robotforge"
+version = "0.1.0"
+description = "基于原生 MJCF Robot Package 的 Web 机器人数字孪生与 Sim2Sim 平台"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+dependencies = [
+    # --- Web 层（§45 / §52）---
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    # --- 数值与解析 ---
+    "numpy>=1.26",
+    "PyYAML>=6.0",
+    # --- 物理后端（§60-§63）：核心依赖，不是可选依赖 ---
+    # MuJoCoBackend 是 Phase 5 的正式交付物，缺了它 §62 的验收无法成立。
+    # 若按"可选"处理，会出现"装了跑得通、没装静默降级成 Mock"——
+    # 那会让"Sim2Sim 通过"变成一个未经验证的结论。
+    "mujoco>=3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "websockets>=12.0",
+]
+
+[project.scripts]
+robotforge = "backend.cli:main"
+
+[tool.setuptools]
+# v0.1 不做 packaging：不声明 packages，避免把 packages/ 下的机器人包
+# 误当成 Python 分发包（它们刻意**没有 __init__.py**，见 docs/robot-package.md）。
+packages = []
+
+# 说明：pytest 配置的唯一定义在 pytest.ini（优先级更高）。
+# 此处刻意不写 [tool.pytest.ini_options]。

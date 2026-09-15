@@ -287,10 +287,41 @@ def main() -> int:
 
         pkg = get_package(fixture["robotId"])
         live_model, live_report = pkg.load_model()
+
+        # ⚠️ 比较前必须**归一化 source 绝对路径**，否则这条断言在不同机器上
+        #    恒定 FAIL，且会把排查方向引向"fixture 过期、去重跑导出脚本" ——
+        #    而重跑导出脚本永远只是把**本机**路径写进去，换台机器又不一致。
+        #
+        #    实测：`metadata.description` = `Loaded from native MJCF (<abs-path>)`，
+        #    fixture 是提交进仓库的，于是它在
+        #      `D:\user_project\git\RobotForge\...` 上导出、
+        #      在 `E:\cnb\git\RobotForge\...` 上校验 ⇒ 必然不等。
+        #
+        #    **真正该断言的是"模型内容一致"，不是"某台机器的磁盘路径一致"。**
+        #    路径属于**环境**，不属于模型语义。
+        def normalize(d: dict) -> dict:
+            d = json.loads(json.dumps(d))  # 深拷贝，别改原对象
+            desc = d.get("metadata", {}).get("description") or ""
+            marker = "Loaded from native MJCF ("
+            if marker in desc and desc.endswith(")"):
+                d["metadata"]["description"] = "Loaded from native MJCF (<path>)"
+            return d
+
+        live_dict = live_model.to_dict()
+        differ = []
+        if normalize(live_dict) != normalize(model):
+            # 给出**具体差异字段**，而不是只报"不一致" ——
+            # 否则排查只能靠人肉 diff 两个大 JSON。
+            a, b = normalize(live_dict), normalize(model)
+            for key in sorted(set(a) | set(b)):
+                if a.get(key) != b.get(key):
+                    differ.append(key)
         check(
-            f"fixture.model 与后端实时加载的 {fixture['robotId']} 一致",
-            live_model.to_dict() == model,
-            "不一致 ⇒ 重跑 tools/export_view_fixture.py（模型变了但快照没更新）",
+            f"fixture.model 与后端实时加载的 {fixture['robotId']} 一致（忽略机器路径）",
+            not differ,
+            f"不一致字段：{differ[:5]} ⇒ 重跑 tools/export_view_fixture.py"
+            if differ
+            else "",
         )
         check("后端加载的模型校验通过", live_report.ok, live_report.format())
 

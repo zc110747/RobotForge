@@ -5,7 +5,7 @@
       "id": "mini_arm",
       "name": "mini_arm",
       "version": "0.0.0-from-mjcf",
-      "description": "Loaded from native MJCF (D:\\user_project\\git\\RobotForge\\packages\\mini_arm\\model\\mini_arm.xml)"
+      "description": "Loaded from native MJCF (E:\\cnb\\git\\RobotForge\\packages\\mini_arm\\model\\mini_arm.xml)"
     },
     "coordinate": {
       "convention": "robotforge",

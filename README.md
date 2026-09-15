@@ -122,8 +122,22 @@ tools/accept_phase2.py           → 56/56 ✅
 tools/accept_phase3.py           → 47/47 ✅
 tools/accept_phase4.py           → 65/65 ✅
 tools/accept_phase5.py           → 67/67 ✅
-tools/accept_phase7.py           → 50/50 ✅
-tools/accept_phase8.py           → 96/96 ✅
+tools/accept_phase7.py           → 50/50 ✅（其上另有「上游无回归」5 项，约 8.5 min）
+tools/accept_phase8.py           → 96/96 ✅（含全部上游，约 12 min）
+```
+
+> **计数口径**（容易读错）：Phase 3 及之后的清单**各自跑一遍全部上游 Phase**，
+> 那一趟以「上游无回归」的子项形式出现，**不计入本 Phase 的分子/分母**。
+> 所以 `accept_phase7.py → 50/50` 的两层含义是：
+> 本 Phase 自身 50 项全绿，**且**上游 Phase 2/3/4/5 分别报
+> 56/56、47/47、65/65、67/67 全绿。
+> 只看 50/50 会以为"数字变小了"，其实那是**两个不同的数**。
+
+前端浏览器级端到端验收（Edge + CDP + swiftshader，零依赖）：
+
+```text
+node tools/e2e_browser_check.mjs → 19 PASS / 0 FAIL / 1 SKIP
+tools/probe_ws_live.py           → 25/25 PASS（真实 TCP，MuJoCoBackend）
 ```
 
 | Phase | 内容 | 状态 |
@@ -137,6 +151,11 @@ tools/accept_phase8.py           → 96/96 ✅
 | 6 | （spec 无 Phase 6） | — |
 | 7 | URDF 扩展点验证 | ✅ 50/50 |
 | 8 | Geometry Asset 扩展点验证 | ✅ 96/96 |
+
+> **验收深度分层**（§71）：pytest 单测 < 真实 TCP 探针（`probe_ws_live.py`）
+> < 无头浏览器端到端（`e2e_browser_check.mjs`）。三者不是替代关系 ——
+> 前两者测不到"3D 场景是否真的画出来"，第三者是唯一能覆盖
+> `RobotModel → Three.js` 这一环的手段。详见 `docs/architecture.md`。
 
 ### 扩展点：怎么加一个新格式（Phase 7 / 8 的用途）
 
