@@ -41,6 +41,11 @@ PY = ROOT / ".venv" / "Scripts" / "python.exe"
 if not PY.exists():
     PY = pathlib.Path(sys.executable)
 
+#: 共享的 pytest 判词解析器（唯一真值源），与 harness 同目录。
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _pytest_verdict import pytest_verdict  # noqa: E402
+
+
 _results: list[tuple[str, bool, str]] = []
 
 
@@ -48,16 +53,20 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     _results.append((name, bool(ok), detail))
 
 
-def run_pytest(*args: str) -> tuple[int, str]:
-    """跑 pytest，返回 (失败数, 输出尾部)。"""
+def run_pytest(*args: str) -> tuple[bool, str]:
+    """跑 pytest，返回 `(是否全通过, 摘要)`。
+
+    ⚠️ **判词来自输出，不是退出码** —— 见 `_pytest_verdict.py` 的模块 docstring：
+    本机沙箱的批量删除守卫会拦下 pytest 的临时目录清理，
+    让"测试全过"的一次运行**退出码非 0**（实测把 Phase 7 顶成 39/50）。
+    """
     proc = subprocess.run(
         [str(PY), "-m", "pytest", *args, "-q", "--no-header"],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
-    out = (proc.stdout + proc.stderr).strip()
-    return proc.returncode, out
+    return pytest_verdict(proc.stdout + proc.stderr)
 
 
 def syntax_clean(path: pathlib.Path) -> tuple[bool, str]:
@@ -133,18 +142,57 @@ def main() -> int:
 
     # ---------------------------------------------------------------- 测试
     print("\n[4] 测试套件")
-    rc, out = run_pytest()
-    tail = out.splitlines()[-1] if out else "(无输出)"
-    check("pytest (Core) 全绿", rc == 0, tail)
-    print(f"    {tail}")
+    ok, out = run_pytest()
+    check("pytest (Core) 全绿", ok, out)
+    print(f"    {out}")
 
-    rc2, out2 = run_pytest("packages/mini_arm/tests")
-    tail2 = out2.splitlines()[-1] if out2 else "(无输出)"
-    check("pytest (mini_arm) 全绿", rc2 == 0, tail2)
-    print(f"    {tail2}")
+    ok2, out2 = run_pytest("packages/mini_arm/tests")
+    check("pytest (mini_arm) 全绿", ok2, out2)
+    print(f"    {out2}")
 
-    rc3, out3 = run_pytest("-m", "slow")
-    check("slow marker 可用", "deselected" in out3 or rc3 == 0, out3.splitlines()[-1] if out3 else "")
+    ok3, out3 = run_pytest("-m", "slow")
+    check("slow marker 可用", "deselected" in out3 or ok3, out3)
+
+
+    # ------------------------------------------------- 判词解析器自身的元测试
+    # ★ 放在**最低的闸门**（Phase 1）里：它是所有 Phase 清单共用的判据基础，
+    #   一旦退化，**每一个** Phase 都会同时失去判别力。
+    #   没有这组元测试的话，"解析器恒返回 True"与"测试真的全过"在输出上一样。
+    _noise = '{"count":5023,"threshold":5000}'
+    _meta = [
+        # (期望, 场景, 输入)
+        (True, "全绿 + 沙箱噪声粘尾",
+         ".................                [100%][safe-delete] " + _noise),
+        (True, "全绿 正常摘要", "488 passed, 2 warnings in 4.87s"),
+        (True, "全绿 单文件", "33 passed in 1.01s"),
+        (False, "有失败", "3 failed, 485 passed in 9.1s"),
+        (False, "有失败 + 噪声", "..." * 10 + " [100%] 3 failed, 30 passed"),
+        (False, "有 error", "2 error in 1.2s"),
+        (False, "无测试", "no tests ran in 0.01s"),
+        (False, "空输出", ""),
+        (False, "只有噪声", "[safe-delete] " + _noise),
+        (False, "只有通过点但没有 [100%]", "." * 40),
+    ]
+    _wrong = [
+        f"{label}（期望 {exp}，实得 {pytest_verdict(text)[0]}）"
+        for exp, label, text in _meta
+        if pytest_verdict(text)[0] is not exp
+    ]
+    check(
+        "★ 判词解析器元测试：10 个场景全部判对"
+        "（『全过但退出码被环境噪声污染』必须判过、『空输出』必须判不过）",
+        not _wrong,
+        f"判错：{_wrong}",
+    )
+    check(
+        "★ 元测试的反例注射：『全过』形态判 True、『空』判 False —— "
+        "两者结论必须相反（证明解析器不是在恒真/恒假）",
+        pytest_verdict("." * 30 + " [100%]")[0] is True
+        and pytest_verdict("")[0] is False,
+        "解析器对『空』与『全过』给出了同一个答案 ⇒ 无判别力",
+    )
+    print(f"    判词解析器元测试：10 场景全对；"
+          f"全过形态 -> {pytest_verdict('.'*30+' [100%]')[1]}")
 
     # ---------------------------------------------------------------- 契约
     print("\n[5] P0 契约（冻结项）")

@@ -82,6 +82,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -99,14 +100,82 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     _results.append((name, bool(ok), detail))
 
 
-def run_pytest(*args: str) -> tuple[int, str]:
+#: pytest 摘要行里的判词。`-q` 结尾那行长这样：
+#:   `488 passed, 2 warnings in 4.87s`
+#:   `1 failed, 487 passed in 12.3s`
+#:   `no tests ran in 0.01s`
+_PYTEST_COUNT_RE = re.compile(
+    r"(?:(?P<failed>\d+)\s+failed)"
+    r"|(?:(?P<passed>\d+)\s+passed)"
+    r"|(?:(?P<error>\d+)\s+error)"
+)
+
+
+def pytest_verdict(out: str) -> tuple[bool, str]:
+    """从 pytest 输出里**自己读判词**，不依赖退出码。返回 `(是否全通过, 摘要行)`。
+
+    ⚠️ 为什么不能用退出码（本机实测，2026-09-15）：
+    沙箱有"批量删除守卫"（单次 turn 内删除 >5000 个文件会被拦）。
+    pytest 每跑一次都会在 `%TEMP%/pytest-of-zc110/` 下建一个临时树，
+    结束时清理它 —— 当同一 turn 里连跑 7 次 pytest（本清单正是如此），
+    累计删除量会越过阈值 ⇒ **清理被守卫拦下 ⇒ pytest 退出码变成非 0**，
+    而**输出里明明全是点和 `[100%]`**：
+
+    ```text
+    .......................   [100%][safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED]
+    {"count":5023,"threshold":5000,...}
+    ```
+
+    实测后果：Phase 7 报 39/50、上游 Phase 1~5 全部连坐 —— 一次**假回归**，
+    代码一行没错。判据必须量它声称要量的东西（"测试有没有过"），
+    而不是"进程退出码"（那还掺了清理是否成功）。
+    """
+    # 只看最后几行：pytest 摘要总在尾部，但后面可能粘着沙箱噪声
+    tail = "\n".join(out.splitlines()[-4:])
+    failed = errored = 0
+    for m in _PYTEST_COUNT_RE.finditer(tail):
+        if m.group("failed"):
+            failed += int(m.group("failed"))
+        elif m.group("error"):
+            errored += int(m.group("error"))
+    passed = sum(
+        int(m.group("passed")) for m in _PYTEST_COUNT_RE.finditer(tail)
+        if m.group("passed")
+    )
+
+    # ★ 第二条通路：`-q` 在"全过"时**只打点不打摘要**（没有 `N passed` 那行），
+    # 而沙箱噪声正好会把它顶掉。此时唯一的正向证据是：
+    # 出现了 `[100%]`，且整段里**既没有 `failed` 也没有 `error` 字样**，
+    # 且有一定的通过点数。这三条同时成立才算过 ——
+    # 不能只看"没有 failed"（那在输出为空时也成立，会变成恒真）。
+    if not passed:
+        has_progress = "[100%]" in out
+        dots = out.count(".")  # 代表通过用例的点
+        no_fail_words = failed == 0 and errored == 0
+        if has_progress and no_fail_words and dots > 10:
+            return True, f"全通过（`[100%]` + {dots} 个通过点；摘要行被环境噪声顶掉）"
+
+    ok = failed == 0 and errored == 0 and passed > 0
+    summary = f"{passed} passed"
+    if failed:
+        summary += f", {failed} failed"
+    if errored:
+        summary += f", {errored} error"
+    return ok, summary
+
+
+def run_pytest(*args: str) -> tuple[bool, str]:
+    """跑 pytest，返回 `(是否全通过, 摘要)`。**判词来自输出，不是退出码。**"""
     proc = subprocess.run(
         [str(PY), "-m", "pytest", *args, "-q", "--no-header"],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
-    return proc.returncode, (proc.stdout + proc.stderr).strip()
+    ok, summary = pytest_verdict(proc.stdout + proc.stderr)
+    if not ok and proc.returncode == 0:
+        summary += "（⚠️ 退出码 0 但输出显示有失败，以输出为准）"
+    return ok, summary
 
 
 def run_python(snippet: str, timeout: int = 300) -> tuple[int, str]:
@@ -599,14 +668,12 @@ print("RESULT_JSON:" + json.dumps({{"mods": mods}}))
         ("tests/test_mujoco.py", ("tests/test_mujoco.py",)),
         ("packages/mini_arm/tests", ("packages/mini_arm/tests",)),
     ):
-        rc, out = run_pytest(*args)
-        tail = out.splitlines()[-1] if out else ""
-        check(f"pytest {label}", rc == 0, tail)
+        ok, tail = run_pytest(*args)
+        check(f"pytest {label}", ok, tail)
         print(f"    {label}: {tail}")
 
-    rc, out = run_pytest()
-    tail = out.splitlines()[-1] if out else ""
-    check("pytest（全量，无回归）", rc == 0, tail)
+    ok, tail = run_pytest()
+    check("pytest（全量，无回归）", ok, tail)
     print(f"    全量: {tail}")
 
     # ================================================================ 6 上游 Phase

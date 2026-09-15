@@ -82,6 +82,11 @@ NODE_CANDIDATES = [
     pathlib.Path(r"D:\Software\nodejs\node.exe"),
 ]
 
+#: 共享的 pytest 判词解析器（唯一真值源），与 harness 同目录。
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _pytest_verdict import pytest_verdict  # noqa: E402
+
+
 _results: list[tuple[str, bool, str]] = []
 
 
@@ -96,14 +101,20 @@ def node_exe() -> pathlib.Path:
     return pathlib.Path("node")
 
 
-def run_pytest(*args: str) -> tuple[int, str]:
+def run_pytest(*args: str) -> tuple[bool, str]:
+    """跑 pytest，返回 `(是否全通过, 摘要)`。
+
+    ⚠️ **判词来自输出，不是退出码** —— 见 `_pytest_verdict.py` 的模块 docstring：
+    本机沙箱的批量删除守卫会拦下 pytest 的临时目录清理，
+    让"测试全过"的一次运行**退出码非 0**（实测把 Phase 7 顶成 39/50）。
+    """
     proc = subprocess.run(
         [str(PY), "-m", "pytest", *args, "-q", "--no-header"],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
-    return proc.returncode, (proc.stdout + proc.stderr).strip()
+    return pytest_verdict(proc.stdout + proc.stderr)
 
 
 def run_node(script: str, timeout: int = 180) -> tuple[int, str]:
@@ -500,14 +511,12 @@ def main() -> int:
 
     # ================================================================ 10 回归
     print("\n[10] 基线回归（Phase 1 未回退）")
-    rc, out = run_pytest()
-    tail = out.splitlines()[-1] if out else "(无输出)"
-    check("pytest (Core) 全绿", rc == 0, tail)
+    ok, out = run_pytest()
+    check("pytest (Core) 全绿", ok, out)
     print(f"    {tail}")
 
-    rc, out = run_pytest("packages/mini_arm/tests")
-    tail = out.splitlines()[-1] if out else "(无输出)"
-    check("pytest (mini_arm) 全绿", rc == 0, tail)
+    ok, out = run_pytest("packages/mini_arm/tests")
+    check("pytest (mini_arm) 全绿", ok, out)
     print(f"    {tail}")
 
     # Phase 1 清单本身必须仍然全通过

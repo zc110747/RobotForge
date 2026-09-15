@@ -117,13 +117,13 @@ python -m venv .venv
 ```text
 pytest -q                        → 488 passed
 pytest packages/mini_arm/tests   → 34 passed
-tools/accept_phase1.py           → 32/32 ✅
+tools/accept_phase1.py           → 34/34 ✅（32 项 + 2 条判词解析器元测试）
 tools/accept_phase2.py           → 56/56 ✅
 tools/accept_phase3.py           → 47/47 ✅
 tools/accept_phase4.py           → 65/65 ✅
 tools/accept_phase5.py           → 67/67 ✅
 tools/accept_phase7.py           → 50/50 ✅（其上另有「上游无回归」5 项，约 8.5 min）
-tools/accept_phase8.py           → 96/96 ✅（含全部上游，约 12 min）
+tools/accept_phase8.py           → 59/59 ✅（其上另有「上游无回归」7 项，约 17 min）
 ```
 
 > **计数口径**（容易读错）：Phase 3 及之后的清单**各自跑一遍全部上游 Phase**，
@@ -132,6 +132,13 @@ tools/accept_phase8.py           → 96/96 ✅（含全部上游，约 12 min）
 > 本 Phase 自身 50 项全绿，**且**上游 Phase 2/3/4/5 分别报
 > 56/56、47/47、65/65、67/67 全绿。
 > 只看 50/50 会以为"数字变小了"，其实那是**两个不同的数**。
+> （`accept_phase8.py` 的 59/59 同理，不是"含上游的 96"。）
+
+> **⚠️ 判据为什么不看退出码**：所有清单的 pytest 检查读的是
+> **pytest 自己打印的摘要**（`tools/_pytest_verdict.py`），不是
+> `proc.returncode`。原因：本机沙箱的批量删除守卫会拦下 pytest 的
+> 临时目录清理，让**测试全过**的一次运行退出码非 0 ⇒ 一次假回归
+> （实测把 Phase 7 顶成 39/50）。详见 `docs/architecture.md` §10.5。
 
 前端浏览器级端到端验收（Edge + CDP + swiftshader，零依赖）：
 
@@ -143,14 +150,14 @@ tools/probe_ws_live.py           → 25/25 PASS（真实 TCP，MuJoCoBackend）
 | Phase | 内容 | 状态 |
 |---|---|---|
 | 0 | 项目初始化 | ✅ |
-| 1 | MJCF + RobotModel | ✅ 32/32 |
+| 1 | MJCF + RobotModel | ✅ 34/34 |
 | 2 | Three.js | ✅ 56/56 |
 | 3 | FK / IK | ✅ 47/47 |
 | 4 | Runtime + WebSocket | ✅ 65/65 |
 | 5 | MuJoCo Sim2Sim | ✅ 67/67 |
 | 6 | （spec 无 Phase 6） | — |
 | 7 | URDF 扩展点验证 | ✅ 50/50 |
-| 8 | Geometry Asset 扩展点验证 | ✅ 96/96 |
+| 8 | Geometry Asset 扩展点验证 | ✅ 59/59 |
 
 > **验收深度分层**（§71）：pytest 单测 < 真实 TCP 探针（`probe_ws_live.py`）
 > < 无头浏览器端到端（`e2e_browser_check.mjs`）。三者不是替代关系 ——

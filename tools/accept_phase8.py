@@ -86,6 +86,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -105,6 +106,11 @@ if not PY.exists():
 #: v0.1 **故意**不实现的格式（§65）。它们必须"不支持"，但错误信息要可行动。
 FUTURE_FORMATS = ("stl", "obj", "gltf", "glb", "step")
 
+#: 共享的 pytest 判词解析器（唯一真值源）。放在 tools/ 下、与 harness 同级。
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _pytest_verdict import pytest_verdict  # noqa: E402
+
+
 _results: list[tuple[str, bool, str]] = []
 
 
@@ -112,14 +118,20 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     _results.append((name, bool(ok), detail))
 
 
-def run_pytest(*args: str) -> tuple[int, str]:
+def run_pytest(*args: str) -> tuple[bool, str]:
+    """跑 pytest，返回 `(是否全通过, 摘要)`。
+
+    ⚠️ **判词来自输出，不是退出码** —— 原因见 `_pytest_verdict.py` 的模块
+    docstring：本机沙箱的批量删除守卫会拦下 pytest 的临时目录清理，
+    让"测试全过"的一次运行**退出码非 0**（实测把 Phase 7 顶成 39/50）。
+    """
     proc = subprocess.run(
         [str(PY), "-m", "pytest", *args, "-q", "--no-header"],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
-    return proc.returncode, (proc.stdout + proc.stderr).strip()
+    return pytest_verdict(proc.stdout + proc.stderr)
 
 
 def run_python(snippet: str, timeout: int = 300) -> tuple[int, str]:
@@ -133,18 +145,91 @@ def run_python(snippet: str, timeout: int = 300) -> tuple[int, str]:
     return proc.returncode, (proc.stdout or "").strip() + (proc.stderr or "").strip()
 
 
+#: 需要剥离的 token 类型集合。
+#:
+#: ★ 为什么**必须**含 `FSTRING_MIDDLE`（Python ≥ 3.12 / PEP 701）：
+#: 3.12 起 f-string 被拆成 `FSTRING_START` + `FSTRING_MIDDLE` + `{表达式}`
+#: + `FSTRING_END`，**f-string 里的字面正文不再是 `STRING` 而是 `FSTRING_MIDDLE`**。
+#: 只滤 `COMMENT`/`STRING` 会让 f-string 的提示文本原样活下来 ——
+#: 实测后果：`asset_loader.py` 里
+#:     raise AssetLoaderRegistrationError(
+#:         f"扩展名不含前导点（注册 'stl'，不是 '.stl'）。"
+#:     )
+#: 这句**纯提示文案**里的 `stl` 会被判成"抽象层引用了具体格式名"，
+#: §65 的检查于是 FAIL —— 而代码里一个格式名都没硬编码。
+#: 换句话说：漏剥 f-string 会把"错误信息写得具体"惩罚成"架构违规"，
+#: 于是修法会退化成人人把提示文案写模糊（判据在腐蚀被测对象）。
+_STRIPPED_TOKEN_TYPES = tuple(
+    t
+    for t in (
+        tokenize.COMMENT,
+        tokenize.STRING,
+        getattr(tokenize, "FSTRING_MIDDLE", None),
+        getattr(tokenize, "FSTRING_START", None),  # 只含 `f"` 前缀，无正文，顺手删
+        getattr(tokenize, "FSTRING_END", None),
+    )
+    if t is not None
+)
+
+
 def strip_comments_and_strings(src: str) -> str:
     """剥离注释与字符串，用于"源码在**运算逻辑**层面引用了什么名字"的判定。
 
-    ⚠️ 语义边界：本函数删掉 `COMMENT` **和** `STRING` 两类 token ——
-    字符串的正文也不会出现在结果里。剩下的只有标识符与控制符。
-    判据关心"代码引用"，而字符串与注释里的名字都是**数据**，不是引用。
+    ⚠️ 语义边界：本函数删掉 `COMMENT`、`STRING` **以及 f-string 的字面正文**
+    （`FSTRING_MIDDLE`，见 `_STRIPPED_TOKEN_TYPES` 的说明）。剩下的只有
+    标识符、运算符与控制符。判据关心"代码引用"，而字符串与注释里的名字
+    都是**数据**，不是引用。
+
+    ⚠️ 本函数**只**保证"字符串正文不在结果里"。它**不**保证结果是可执行的
+    Python（`untokenize` 会补空白、被删的 token 位置会塌缩）。用途仅限
+    "扫名字"，不要拿去 `exec`。
     """
     return tokenize.untokenize(
         tok
         for tok in tokenize.generate_tokens(iter(src.splitlines(True)).__next__)
-        if tok.type not in (tokenize.COMMENT, tokenize.STRING)
+        if tok.type not in _STRIPPED_TOKEN_TYPES
     )
+
+
+#: 标识符字符集：ASCII 字母数字 + 下划线 + 非 ASCII（CJK 常用在变量名之外，
+#: 但这里保守地算进去，避免把 `格式名` 这类标识符切开而漏判）。
+_IDENT_CHARS = re.compile(r"[0-9A-Za-z_\u0080-\uffff]")
+#: 允许出现在扩展名里的字符（格式名都是 `[a-z0-9]`）。
+_WORD_CHARS = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+
+def mentions_format_name(code: str, name: str) -> bool:
+    """判断 `name` 是否作为**独立名字/扩展名**出现在 `code` 里（词边界匹配）。
+
+    ★ 为什么不能用裸子串 `name in code`：
+    `step` / `obj` 这类短格式名是**大量常见标识符的子串** ——
+    实测 `robot_runtime.py` 里 `async def step(...)`（正是 spec 要求的
+    Runtime 接口方法名）会把 §65 的 `step` 检查顶红；`asset_loader.py`
+    里 `extension: object` 的 `object` 会把 `obj` 检查顶红。
+    于是判据在惩罚**正确的代码**（接口方法就该叫 `step`），
+    而修法只能是改接口名或把类型注解写成 `"object"` —— 两者都是错的。
+
+    词边界定义（两侧）：
+      - 左侧：`code[i-1]` 不是标识符字符（`[0-9A-Za-z_]` 及非 ASCII）
+      - 右侧：`code[i+len(name)]` 不是标识符字符
+
+    这样 `step` 只命中独立出现（`.step` / `step(` / `"step"`），
+    **不**命中 `steps` / `stepper` / `footstep`；
+    `obj` 不命中 `object` / `obj_ref` 的 `obj_`，但**会**命中独立 `obj`。
+    """
+    if not name:
+        return False
+    start = 0
+    while True:
+        i = code.find(name, start)
+        if i < 0:
+            return False
+        left_ok = i == 0 or not _IDENT_CHARS.match(code[i - 1])
+        j = i + len(name)
+        right_ok = j >= len(code) or not _IDENT_CHARS.match(code[j])
+        if left_ok and right_ok:
+            return True
+        start = i + 1
 
 
 def string_literals(src: str) -> list[str]:
@@ -555,10 +640,11 @@ print("RESULT_JSON:" + json.dumps({{
         "class" in al_code and len(al_code) > 500,
         f"剥离后长度 = {len(al_code)}",
     )
+    al_hits = [f for f in ("stl", "obj", "gltf", "collada", "step") if mentions_format_name(al_code, f)]
     check(
         "§65：抽象层 asset_loader.py 不 import 任何具体 mesh 格式",
-        not any(f in al_code for f in ("stl", "obj", "gltf", "collada", "step")),
-        "asset_loader.py 的代码里出现了具体格式名",
+        not al_hits,
+        f"asset_loader.py 的代码里出现了具体格式名：{al_hits}",
     )
 
     # (b) Runtime 不得依赖任何 asset 格式（§65：加 loader 不影响 Runtime）
@@ -572,10 +658,51 @@ print("RESULT_JSON:" + json.dumps({{
         f"剥离后长度 = {len(rt_code)}",
     )
     for forbidden in FUTURE_FORMATS + ("mjcf", "urdf"):
+        # ★ `step` 与 spec **强制要求的** Runtime 接口方法名 `step()` 同名。
+        # 裸词匹配必然顶红 `async def step(...)` —— 而那是 spec §47/§55 规定的
+        # Runtime 方法（`await rt.step(command)`），**不能删**。
+        # 因此对 `step` 只检查"作为**格式/扩展名**被引用"的形态：
+        #   `.step`（扩展名/属性）、`step_loader`、`load_step`、`StepLoader`、
+        #   `"step"`（字面量，已由剥离器干掉 ⇒ 走到这里的只可能是代码形态）。
+        # 而"作为方法名/局部变量"的 `step` **不算**依赖 asset 格式 ——
+        # 这正是判据该有的语义：§65 关心的是"Runtime 有没有为某种 mesh 格式
+        # 开分支/做特判"，不是"Runtime 里出现了 step 这个词"。
+        if forbidden == "step":
+            # ★ `step` 与 spec **强制要求的** Runtime 接口方法名 `step()` 同名，
+            # 而 `await self.step(cmd)` / `def step(self)` 是**必删不能删**的代码。
+            # 所以判据必须收窄到"**作为格式/加载器被引用**"的形态。
+            #
+            # ⚠️ 为什么不能靠 `.step` 这个形状：
+            # 扩展名引用（`'wheel.step'` / `Path(p).suffix`）是**字符串**，
+            # 已被剥离器干掉 ⇒ 走到这一步的 `.step` 只剩两种可能：
+            # ① `self.step(...)` —— 就是那个接口方法（合法）
+            # ② `obj.step` —— 属性名，与 asset 格式无关
+            # 两者都不是"依赖 STEP 格式" ⇒ `.step` 作为判据只会误报。
+            #
+            # 因此收窄到 **loader / parser 命名形态**，这也正是 §65 的原话
+            # （spec：「STLLoader / OBJLoader / GLTFLoader / CAD/STEP Loader」）。
+            offending = [
+                pat
+                for pat in (
+                    "step_loader",   # 模块/变量名
+                    "steploader",    # 类名 StepLoader（lower 后）
+                    "load_step",     # 函数名
+                    "parse_step",    # 函数名
+                    "step_parser",   # 解析器名
+                )
+                if pat in rt_code
+            ]
+            check(
+                f"§65：Runtime 不依赖 asset 格式 {forbidden}",
+                not offending,
+                f"robot_runtime.py 的代码里出现了 STEP 格式引用：{offending}"
+                "（注：`step()` 方法名本身除外 —— 它与 spec 的 Runtime 接口同名）",
+            )
+            continue
         check(
             f"§65：Runtime 不依赖 asset 格式 {forbidden}",
-            forbidden not in rt_code,
-            f"robot_runtime.py 的代码里出现了 {forbidden!r}",
+            not mentions_format_name(rt_code, forbidden),
+            f"robot_runtime.py 的代码里出现了 {forbidden!r}（独立名字，非子串）",
         )
 
     # (c) 分派模块不得把格式名硬编码成字符串字面量
@@ -627,6 +754,91 @@ print("RESULT_JSON:" + json.dumps({{
         f"剥离结果 = {probe!r}",
     )
     print(f"    剥离器探针：{probe!r}")
+
+    # (e2) ★ 剥离器元测试之二：**f-string 的字面正文也必须被剥掉**。
+    # 这条是补上的 —— 原先只有上面那条（普通 STRING），于是 PEP 701 的
+    # `FSTRING_MIDDLE` 漏剥整整漏了过去，直接导致 §65 的两条 FAIL。
+    # 反例注射：把 `_STRIPPED_TOKEN_TYPES` 里的 FSTRING_MIDDLE 去掉，本项立刻红。
+    fs_probe = strip_comments_and_strings(
+        'msg = f"注册 \'stl\'，不是 \'.stl\' {ext!r}"\n'
+        'plain = "gltf"\n'
+        'keep = obj_bare\n'
+    )
+    check(
+        "扫描器元测试：f-string 的**字面正文**被剥离、插值表达式与裸标识符保留"
+        "（PEP 701：f-string 正文是 FSTRING_MIDDLE，不是 STRING）",
+        "stl" not in fs_probe.lower()
+        and "gltf" not in fs_probe.lower()
+        and "obj_bare" in fs_probe
+        and "ext" in fs_probe,  # 插值里的名字必须留着（那才是"代码引用"）
+        f"剥离结果 = {fs_probe!r}",
+    )
+    print(f"    f-string 剥离探针：{fs_probe!r}")
+
+    # (f) 词边界匹配器元测试 —— 判据本身有没有判别力
+    check(
+        "词边界匹配元测试：能抓到**独立出现**的格式名"
+        "（`.step` / `step(` / 独立 `obj` 都要命中）",
+        mentions_format_name("await self.step(cmd)", "step")
+        and mentions_format_name("def step(self)", "step")
+        and mentions_format_name("kind = obj", "obj")
+        and mentions_format_name("x.stl", "stl"),
+        "独立出现的格式名居然没抓到 ⇒ 判据恒真",
+    )
+    check(
+        "词边界匹配元测试：**不**抓长标识符里的子串"
+        "（`steps`/`stepper`/`object`/`obj_ref` 都不算）",
+        not mentions_format_name("n = steps + 1", "step")
+        and not mentions_format_name("class Stepper", "step")
+        and not mentions_format_name("extension: object", "obj")
+        and not mentions_format_name("my_obj_ref", "obj"),
+        "子串被误判成格式名 ⇒ 判据会惩罚正确的代码",
+    )
+    # 反例注射：拿修好之前的写法（裸子串）跑一遍，必须与现在**结论相反** ——
+    # 证明这次改的不是"凑绿"，而是判据的判别力真的变了。
+    old_style_step = "step" in "async def step(self): pass"
+    old_style_obj = "obj" in "extension: object"
+    check(
+        "★ 反例注射：旧的『裸子串』判据**确实**会把 `def step` 与 `: object` 判成违规"
+        "（证明这次改的是判据判别力，不是把检查凑绿）",
+        old_style_step and old_style_obj,
+        f"旧判据命中 step={old_style_step} obj={old_style_obj}"
+        "（预期两者都为 True）",
+    )
+    # (g) ★ `step` 的收窄判据本身也必须**有判别力** ——
+    # 否则它就是一条恒真项（"永远不报"和"没在查"在输出上无法区分）。
+    # 收窄后的定义（与上面 (b) 处的实现**必须**一致）：
+    #   STEP 只认"被当成 loader/parser 引用"的命名形态，
+    #   **不**认 `.step`（那是 spec 要求的接口方法调用，或无关属性名）。
+    _STEP_PATS = ("step_loader", "steploader", "load_step", "parse_step", "step_parser")
+    # 必须抓到：真在代码里引用 STEP 格式的形态
+    caught = [s for s in (
+        "from backend.loaders.step_loader import StepLoader",  # step_loader 模块
+        "class StepLoader(AssetLoader):",                       # steploader（lower 后）
+        "asset = load_step(path)",                              # load_step 函数
+        "def parse_step(self): pass",                           # parse_step 私有方法
+        "self.step_parser = Parser()",                          # step_parser 属性
+    ) if any(p in s.lower() for p in _STEP_PATS)]
+    check(
+        "★ `step` 收窄判据的判别力：真在引用 STEP 格式的 5 种写法**都**被抓到",
+        len(caught) == 5,
+        f"只抓到 {len(caught)}/5：{caught}",
+    )
+    # 必须放过：spec 强制要求的 Runtime 接口
+    spared = [s for s in (
+        "async def step(self, command: RobotCommand) -> RobotState:",
+        "await self.step(cmd)",
+        "for _ in range(steps): pass",
+        "return await self._dispatch(command)",
+        "self._step_size = 0.02",
+    ) if any(p in s.lower() for p in _STEP_PATS)]
+    check(
+        "★ `step` 收窄判据的正确性：spec 要求的 `step()` 接口、`steps` 变量、"
+        "`_step_size` 常量**都不**被误判",
+        not spared,
+        f"被误判的合法代码：{spared}",
+    )
+    print(f"    step 收窄判据：抓到 {len(caught)}/5，误判 {len(spared)}/5")
 
     # ================================================================ 4 两注册表互不干扰
     print("\n[4] 两个注册表是两件事（§43 vs §65）")
@@ -692,14 +904,14 @@ print("RESULT_JSON:" + json.dumps({{
         ("tests/test_mujoco.py", ("tests/test_mujoco.py",)),
         ("packages/mini_arm/tests", ("packages/mini_arm/tests",)),
     ):
-        rc, out = run_pytest(*args)
+        ok, out = run_pytest(*args)
         tail = out.splitlines()[-1] if out else ""
-        check(f"pytest {label}", rc == 0, tail)
+        check(f"pytest {label}", ok, tail)
         print(f"    {label}: {tail}")
 
-    rc, out = run_pytest()
+    ok, out = run_pytest()
     tail = out.splitlines()[-1] if out else ""
-    check("pytest（全量，无回归）", rc == 0, tail)
+    check("pytest（全量，无回归）", ok, tail)
     print(f"    全量: {tail}")
 
     # ================================================================ 7 上游 Phase

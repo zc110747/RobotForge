@@ -83,6 +83,11 @@ PY = ROOT / ".venv" / "Scripts" / "python.exe"
 if not PY.exists():
     PY = pathlib.Path(sys.executable)
 
+#: 共享的 pytest 判词解析器（唯一真值源），与 harness 同目录。
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _pytest_verdict import pytest_verdict  # noqa: E402
+
+
 _results: list[tuple[str, bool, str]] = []
 
 
@@ -90,14 +95,20 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     _results.append((name, bool(ok), detail))
 
 
-def run_pytest(*args: str) -> tuple[int, str]:
+def run_pytest(*args: str) -> tuple[bool, str]:
+    """跑 pytest，返回 `(是否全通过, 摘要)`。
+
+    ⚠️ **判词来自输出，不是退出码** —— 见 `_pytest_verdict.py` 的模块 docstring：
+    本机沙箱的批量删除守卫会拦下 pytest 的临时目录清理，
+    让"测试全过"的一次运行**退出码非 0**（实测把 Phase 7 顶成 39/50）。
+    """
     proc = subprocess.run(
         [str(PY), "-m", "pytest", *args, "-q", "--no-header"],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
-    return proc.returncode, (proc.stdout + proc.stderr).strip()
+    return pytest_verdict(proc.stdout + proc.stderr)
 
 
 def run_python(snippet: str, timeout: int = 300) -> tuple[int, str]:
@@ -1134,14 +1145,14 @@ def main() -> int:
         ("tests/test_kinematics_core.py", ("tests/test_kinematics_core.py",)),
         ("packages/mini_arm/tests", ("packages/mini_arm/tests",)),
     ):
-        rc, out = run_pytest(*args)
-        tail = out.splitlines()[-1] if out else ""
-        check(f"pytest {label}", rc == 0, tail)
+        ok, out = run_pytest(*args)
+        tail = out
+        check(f"pytest {label}", ok, tail)
         print(f"    {label}: {tail}")
 
-    rc, out = run_pytest()
-    tail = out.splitlines()[-1] if out else ""
-    check("pytest（全量，无回归）", rc == 0, tail)
+    ok, out = run_pytest()
+    tail = out
+    check("pytest（全量，无回归）", ok, tail)
     print(f"    全量: {tail}")
 
     # ================================================================ 9 上游 Phase

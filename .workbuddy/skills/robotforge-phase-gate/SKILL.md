@@ -57,8 +57,23 @@ accept_phase3.py                 → 47/47
 accept_phase4.py                 → 65/65
 accept_phase5.py                 → 67/67
 accept_phase7.py                 → 50/50（内含全部上游，耗时约 20 min）
-accept_phase8.py                 → 96/96（内含全部上游，耗时约 20 min）
+accept_phase8.py                 → 59/59（内含全部上游，耗时约 20 min）
 ```
+
+⚠️ **两个不同的数，别混**（我在这上面错过两轮）：
+
+```text
+Phase N 清单**自己**的检查数        ← 这个才是"Phase N 的分子/分母"
+  accept_phase7.py → 50/50
+  accept_phase8.py → 59/59
+
+清单**顺带**跑的上游 Phase 复查     ← 以「上游无回归」子项出现，
+                                       **不计入本 Phase 的分子/分母**
+```
+
+⇒ 记忆里的 `Phase 7 = 84/84` 是"50 自身 + 34 上游子项"的**合计**，
+不是 Phase 7 的分母。写基线时若把两者混用，会出现"数字怎么变小了"的假警报。
+**出交付结论时只报"自身/自身"那个数**，上游回归另起一行。
 
 数字变了（而不只是"仍然全绿"）说明测试被增删，必须解释原因。
 
@@ -629,9 +644,226 @@ joint.no_position_limit revolute 关节要给完整 JointLimits(position_min/max
 
 ⇒ 合成模型也要断言 `report.ok is True`，不能只断言 `model is not None`。
 
+### 4.19 ★★ 剥离字符串的检查器：PEP 701 让 **f-string 正文漏剥**（Phase 8 实测）
+
+扫"源码里引用了什么名字"的判据（§4.12 / §4.17）通常写成
+"删掉 `COMMENT` 和 `STRING` token，剩下的就是代码引用"。**这条在 Python ≥ 3.12 上不成立。**
+
+PEP 701 把 f-string 拆成 `FSTRING_START` + `FSTRING_MIDDLE` + `{表达式}` + `FSTRING_END`：
+
+```text
+实测 token 流（Python 3.13.14）
+  FSTRING_START      'f"'
+  FSTRING_MIDDLE     'a stl b '      ← ★ 字面正文在这里，不是 STRING
+  OP                 '{'
+  NAME               'y'
+  OP                 '}'
+  FSTRING_MIDDLE     ' c obj d'
+  FSTRING_END        '"'
+  STRING             '"plain stl"'   ← 只有这种普通串才被剥
+```
+
+⇒ `tok.type not in (COMMENT, STRING)` 的剥离器**会放过 f-string 的正文**。
+
+**实测后果（`accept_phase8.py` §65）**：抽象层 `asset_loader.py` 里这句
+**纯提示文案**被判成"引用了具体 mesh 格式名"：
+
+```python
+raise AssetLoaderRegistrationError(
+    f"扩展名不含前导点（注册 'stl'，不是 '.stl'）。"
+)
+```
+
+**这条坑真正的险处**：判据在惩罚"错误信息写得具体"。
+它把**可行动的提示**（告诉调用方该怎么写才对）判成架构违规，
+于是唯一能让清单变绿的修法是**把提示文案写模糊** —— 判据在腐蚀被测对象。
+看到"某条检查逼迫我把说明文字写含糊"时，先怀疑检查，不要改文案。
+
+```python
+# ✅ 修法：把 f-string 三类 token 一并剥掉（getattr 兼容 < 3.12）
+_STRIPPED_TOKEN_TYPES = tuple(
+    t for t in (
+        tokenize.COMMENT, tokenize.STRING,
+        getattr(tokenize, "FSTRING_MIDDLE", None),
+        getattr(tokenize, "FSTRING_START", None),
+        getattr(tokenize, "FSTRING_END", None),
+    ) if t is not None
+)
+```
+
+⚠️ **为什么原先没发现**：剥离器元测试只造了普通 `'...'` 与 `"..."` 两类样本，
+**没有 f-string 样本** ⇒ 漏洞一路漏到 FAIL 才暴露。
+元测试必须覆盖**每一条被测的 token 种类**，否则它证明不了剥离器对那种 token 有效。
+补的元测试还要断言"**插值里的名字必须保留**"（`{ext!r}` 的 `ext`），
+否则一个"把整行都吃掉"的剥离器也能通过。
+
+### 4.20 ★★ 短格式名做裸子串匹配 ⇒ 同名误报（Phase 8 实测，与 4.19 同源）
+
+`FUTURE_FORMATS = ("stl", "obj", "gltf", "glb", "step")` 这种**短**名字，
+用 `name in code` 判定必然误报。Phase 8 一次撞上两个：
+
+| 误命中 | 真实来源 | 类型 |
+|---|---|---|
+| `obj` | `def __contains__(self, extension: object)` | **子串**：`object` 里的 `obj` |
+| `step` | `async def step(self, command) -> RobotState:` | **同名**：与 spec 强制的接口方法撞名 |
+
+第二行尤其致命：`step()` 是 spec 要求**必须存在**的 Runtime 接口，
+判据却因此报"Runtime 依赖了 STEP 格式"。
+**修法绝不能是删 `step()` 方法**（那是为了让清单变绿而破坏契约）。
+
+```python
+# ① 通用：词边界匹配 —— 左右两侧都不能是标识符字符
+_IDENT_CHARS = re.compile(r"[0-9A-Za-z_\u0080-\uffff]")
+
+def mentions_format_name(code: str, name: str) -> bool:
+    start = 0
+    while True:
+        i = code.find(name, start)
+        if i < 0:
+            return False
+        left_ok = i == 0 or not _IDENT_CHARS.match(code[i - 1])
+        j = i + len(name)
+        right_ok = j >= len(code) or not _IDENT_CHARS.match(code[j])
+        if left_ok and right_ok:
+            return True
+        start = i + 1
+```
+
+词边界只解决 `object` 那种**子串**问题；`step` 是**独立出现**的真同名，
+词边界救不了 ⇒ 必须按"**它被怎么用**"收窄：
+
+```text
+② 与接口方法撞名的格式名（本例 step），只认"被当成 loader/parser 引用"的形态：
+     step_loader / steploader / load_step / parse_step / step_parser
+```
+
+⚠️ **不要**把 `.step` 当判据。看起来"扩展名都写成 `.step`"很有道理，实则相反：
+扩展名引用（`'wheel.step'`）**是字符串，已被剥离器干掉** ⇒
+走到这一步的 `.step` 只剩 `self.step(...)`（就是那个接口方法）与 `obj.step`（无关属性）
+⇒ 拿它当判据**只会误报**。实测：加 `.step` 时 `await self.step(cmd)` 被误判。
+
+**收窄判据必须测两侧**（否则"永远不报"与"没在查"在输出上无法区分）：
+
+```text
+判别力  5 种真引用 STEP 格式的写法（step_loader 模块 / StepLoader 类 /
+        load_step 函数 / parse_step 方法 / step_parser 属性）⇒ 必须 5/5 抓到
+正确性  5 种合法代码（def step / await self.step / range(steps) /
+        _step_size 常量 / obj.step 属性）⇒ 必须 0/5 误判
+反例注射 旧写法（裸子串）实测**确实**把 `def step` 与 `: object` 判违规
+        ⇒ 证明这次改的是判别力，不是把检查凑绿
+```
+
+### 4.21 我的探针期望也会错（别把"我没料到"当"函数有问题"）
+同一次排查里，我写探针时下意识期望 `mentions_format_name("x.obj_ref", "obj") is True`
+（"含 obj 字样嘛"），实测 `False`。**是探针的期望错了**：
+`obj_ref` 是一个完整标识符，`obj` 在其中不是独立名字 ⇒ 不命中才对。
+
+这正是"判据要写不变量"的又一例 —— 我下意识把"**含** obj 字样"
+当成了"**引用** obj 格式"。探针失败时，先问"**我的期望本身凭什么成立**"，
+再决定改代码还是改期望。
+
+### 4.22 ★★「退出码」不是「测试结果」——沙箱清理被拦会伪造整片回归
+
+**症状**：Phase 7 从 50/50 掉到 **39/50**，Phase 1~5 全部连坐，
+`pytest` 每一项都 FAIL，而输出里：
+
+```text
+[FAIL] pytest tests/test_loader_registry.py
+       ↳ .......................                     [100%][safe-delete]
+         [SAFE_DELETE_BULK_CONFIRM_REQUIRED] {"count":5023,"threshold":5000,...}
+```
+
+`[100%]` + 一整串通过点 —— **测试全过**，判 FAIL。代码一行没错。
+
+**机制**：本机沙箱有"批量删除守卫"（单 turn 内删除 >5000 个文件被拦）。
+pytest 每跑一次都在 `%TEMP%/pytest-of-zc110/` 建一棵临时树并在结束时清理；
+一条清单会连跑 7 次 pytest，累计删除量越过阈值 ⇒ **清理被拦 ⇒ 退出码非 0**。
+
+**根因是判据写错了**：`check("pytest ...", proc.returncode == 0, ...)`。
+判据必须量它**声称**要量的东西 —— "测试有没有过"，
+而不是"进程退出码"（后者还掺了"临时目录清理有没有被放行"）。
+
+✅ **修法**：读 pytest **自己的摘要**，两级判词：
+
+```text
+① 摘要行有 `N passed` / `N failed` / `N error`  → 直接读计数（最可靠）
+② 摘要行被噪声顶掉（`-q` 全过时**只打点、不打计数**）
+   ⇒ 退化判据：出现 `[100%]` **且** 全文无 `failed`/`error` **且** 通过点 >10
+```
+
+⚠️ 第 ② 级的三个条件必须**同时**成立。少任何一个都会恒真：
+只看"没有 failed"的话，**空输出**也会判过。
+
+共享实现落在 `tools/_pytest_verdict.py`（**唯一真值源**），
+7 个 harness 全部 `from _pytest_verdict import pytest_verdict`。
+元测试放在**最低的闸门**（Phase 1），因为它是所有清单共用的判据基础 ——
+它一退化，**每个** Phase 都同时失去判别力。元测试必测的 10 个场景：
+
+```text
+必须判过  全过+沙箱噪声粘尾 / 全过正常摘要 / 全过单文件
+必须判不过 有失败 / 有失败+噪声 / error / 无测试 / 空输出 / 只有噪声 /
+          只有通过点但没有 [100%]
+反例注射  『全过』判 True 与『空』判 False 结论必须相反
+```
+
+**同类问题**：`.ts` runner 与 `run_python` 的检查同样别用退出码当唯一判据 ——
+它们的输出也可能被环境噪声污染。
+
+### 4.23 ★★ 正则批量改写必须锚定"哪个函数的返回值"，不能锚定"变量叫什么"
+
+修 §4.22 时我用 `re.sub(r"\brc == 0\b", "ok", src)` 一把梭，
+想统一把"退出码判断"改成"判词判断"。后果：
+
+```text
+`.ts` runner 的 `rc == 0 and "✅" in tail`  → 被改成 `ok and ...`  ← ok 未定义！
+`run_python` 的 `rc == 0`（本来就该留）      → 被改成 `ok`        ← 语义被破坏
+```
+
+5 个 harness 全部 `UnboundLocalError`。**最阴的地方**：
+改名**不改变语法**，`ast.parse` 依然通过 ——
+"语法 OK" 这种检查**根本发现不了这次破坏**，只有真跑才会炸。
+
+⇒ 两个动作纪律：
+
+```text
+① 批量替换前先 `grep -n` 列出**所有**命中行，人工分辨哪些属于目标函数。
+   本项目的正确判据是"这一行 rc 来自 run_pytest 还是 run_python" ——
+   于是替换必须**逐条整段**匹配（含上下文的 print/check 行），不能只匹配那一行。
+② 改完**立刻真跑一次**，不要只看 ast.parse。
+   改名类破坏只有运行期才可见。
+```
+
+⚠️ 同一文件的多处 `Edit` 也不要放进同一条消息（会静默丢更新）——
+逐条串行提交，改完 `grep` 逐条确认。
 
 
-这是最容易写出错误测试的地方。
+### 4.24 单目标重跑 ≠ 链上重跑（两次数字不一致要查环境）
+
+同一次排查里，Phase 7 在 Phase 8 清单内部报 **48/50**，
+单独重跑却报 **39/50**。**两个数都不是代码问题**，
+但**不同**说明触发条件是"累计删除量"这种**turn 级累积状态**：
+
+```text
+Phase 8 清单内部跑 Phase 7    → 前面已跑了 6 次 pytest，累计量已高 ⇒ 48/50
+单独跑 Phase 7                → 它自己内部连跑 7 次，累计量更高 ⇒ 39/50
+```
+
+⇒ 这类"同一个判据在链上/单跑给出不同结果"的现象，
+**先怀疑环境里的累积状态**（临时文件、句柄、磁盘），再怀疑代码。
+本条与 §4.22 是同一个 bug 的两种表现。
+
+**顺带**：`%TEMP%/pytest-of-zc110/` 会随验证轮次无限堆积
+（实测 63 个会话目录、1412 个文件）。清理它是安全的：
+
+```bash
+.venv/Scripts/python.exe -c "import shutil,pathlib,tempfile; \
+  shutil.rmtree(pathlib.Path(tempfile.gettempdir())/'pytest-of-zc110', ignore_errors=True)"
+```
+
+
+### 4.25 IK 的两条可达边界（写 IK 测试最容易踩的）
+
+**这是最容易写出错误测试的地方。**
 
 ```text
 边界 1  位置可达     r ≤ r_max = L1 + L2_EFF = 0.103 + 0.097 = 0.200 m
@@ -889,7 +1121,9 @@ CLI 按 `type` 分派（`package` 加载 entry；`engine` 报"v0.1 尚未提供"
 
 ```text
 Phase 0  ✅ 骨架 + venv + pytest 可跑
-Phase 1  ✅ 32/32；Core 测试全绿
+Phase 1  ✅ 34/34；Core 测试全绿
+             ⚠️ 32 → 34：新增 2 条『pytest 判词解析器』元测试（见 §4.22）
+             它们是所有清单共用的判据基础，故放在最低的闸门
 Phase 2  ✅ 56/56；Three.js 渲染链路 + 三套前端可执行检查
 Phase 3  ✅ 47/47；293 (Core) + 34 (mini_arm) 全绿
              forward_kinematics 提升进 backend/kinematics/fk.py
@@ -905,13 +1139,15 @@ Phase 5  ✅ 67/67；432 (Core) + 34 (mini_arm) 全绿
              tests/test_mujoco.py（57）
              MuJoCo 3.13.0；mini_arm 的 MJCF 补 armature + contact/exclude
 Phase 6  —（spec 无此 Phase，§64 直接接 Phase 7）
-Phase 7  ✅ 84/84；488 (Core) + 34 (mini_arm) 全绿
+Phase 7  ✅ 50/50；488 (Core) + 34 (mini_arm) 全绿
+             （记忆里的 84/84 是『50 自身 + 上游子项』的合计，**不是分母**，见 §1）
              backend/loaders/registry.py（LoaderRegistry + get/default_loader_registry）
              backend/api/registry.py 的 load_model() 改为**查注册表分派**
                （原为 MJCFLoader() + if fmt != "mjcf": raise）
              tests/test_loader_registry.py（23）
              验收要点见 §4.16 / §4.17 / §4.18
-Phase 8  ✅ 96/96；488 (Core) + 34 (mini_arm) 全绿
+Phase 8  ✅ 59/59；488 (Core) + 34 (mini_arm) 全绿
+             （同理，96 是『59 自身 + 上游子项』的合计）
              backend/loaders/asset_loader.py
                （AssetLoader / GeometryAsset / GeometryAssetRegistry / 错误分层）
              tests/test_asset_loader.py（33）
