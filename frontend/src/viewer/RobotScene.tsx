@@ -477,8 +477,15 @@ export interface RobotSceneProps {
    * 权威姿态 —— App 把 robot_state.joints 传进来（§49 唯一闭环）
    * 预演姿态 —— App 把 predictor 的 ghost 值传给 <GhostArm/>
    * ```
+   *
+   * ⚠️ 类型里必须显式写 `| undefined` —— 本工程开了
+   *    `exactOptionalPropertyTypes`，`?:` 只表示"可以不传"，
+   *    **不**表示"可以显式传 undefined"。
+   *    调用方常写成 `jointPositions={x ?? undefined}`（因为 x 可能是 null），
+   *    少了这个 `| undefined` 就会在调用点报 TS2375 ——
+   *    而报错位置在**调用方**，看起来像调用方写错，实际是这里缺字。
    */
-  jointPositions?: Readonly<Record<string, number>>;
+  jointPositions?: Readonly<Record<string, number>> | undefined;
 }
 
 /**

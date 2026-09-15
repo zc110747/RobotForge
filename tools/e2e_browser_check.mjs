@@ -689,17 +689,144 @@ async function main() {
     check("无未捕获异常", realExceptions.length === 0,
           realExceptions.length ? String(realExceptions[0].exception?.description).slice(0, 160) : "");
 
-    // ---------- ⑧ WebSocket 是否真的连上了 ----------
-    // 该探测必须**读页面自己的状态**，不能只断言"服务端有连接数" ——
-    // 后者是页面之外的事实。
-    const wsOk = await cdp.eval(`(() => {
-      const marks = { connected: false, why: 'no signal' };
-      // 页面若暴露了 ws 状态就取；否则用 performance 资源记录判断
-      const res = performance.getEntriesByType('resource').map(r => r.name);
-      const hasWsProbe = res.some(n => n.includes('/ws'));
-      return { hasWsProbe, resources: res.filter(n => n.startsWith('http')).length };
+    // ---------- ⑧ §49 闭环：命令真的出去了、状态真的回来了 ----------
+    //
+    // ⚠️ 先恢复侧边栏：第 ⑥ 段点了「隐藏面板」且**没有**再点回来。
+    //    不恢复的话下面每个 querySelector 都查不到东西，
+    //    而失败信息会是"找不到关节控制面板" —— 看起来像面板没渲染，
+    //    实际是它被折叠了（`.sidebar.collapsed` 里 display:none）。
+    //    这类"上游步骤留下的状态"是端到端脚本最常见的假失败来源。
+    await cdp.eval(`(() => {
+      const s = document.querySelector('.sidebar');
+      if (s && s.className.includes('collapsed')) {
+        const b = [...document.querySelectorAll('.toolbar button')]
+          .find(x => x.textContent.includes('显示面板'));
+        if (b) b.click();
+      }
+      return true;
     })()`);
-    skip("页面内 WebSocket 探针", `本页为 REST-only 渲染，WS 由 tools/probe_ws_live.py 独立验收（已 25/25 PASS）；页面资源 ${wsOk?.resources} 项`);
+    await sleep(600);
+    const sidebarRestored = await cdp.eval(
+      `(() => { const s = document.querySelector('.sidebar'); return s ? s.className : null; })()`
+    );
+    check("⑧ 前置：侧边栏已恢复展开（否则后面查不到面板）",
+          sidebarRestored !== null && !sidebarRestored.includes("collapsed"),
+          `sidebar.class=${sidebarRestored}`);
+
+    // ## 为什么这一节必须**读页面自己的 DOM**
+    //
+    // 判据不能是"服务端看到了连接"—— 那是页面之外的事实，
+    // 服务端有一条连接不代表**这个页面**的命令发得出去。
+    // 也不看 `performance.getEntriesByType('resource')`：WebSocket 握手
+    // 不进 resource timing（它不是 fetch/XHR 资源），那条判据永远是假。
+    //
+    // ⇒ 判据落在**面板上可见的数字**：
+    //    ① 链路面板显示"已连接"（前端真的建连了）
+    //    ② 拖动滑块后，该关节的「实际」列**变了**
+    //       —— 变说明：命令出去了 → Runtime → Backend → MuJoCo → state 回来了
+    //    ③ 「命令」与「实际」两列都还在（State ≠ Command 是可观测的）
+    //
+    // ⚠️ ②是这条链路的**唯一**端到端证据。
+    //    只断言"WebSocket 已连接"是不够的：连接可能建上但命令发不出去
+    //    （`sendCommand` 在 socket 未 open 时返回 false、静默丢弃）。
+    const connText = await cdp.eval(`(() => {
+      const tds = [...document.querySelectorAll('.panel table td')];
+      const i = tds.findIndex(td => td.textContent.trim() === 'WebSocket');
+      return i >= 0 ? tds[i + 1]?.textContent.trim() : null;
+    })()`);
+    check("前端真的建了 WebSocket 连接（页面显示『已连接』）",
+          connText === "已连接",
+          `链路面板 WebSocket = ${JSON.stringify(connText)}`);
+
+    // 关节控制面板应当存在（capability 驱动：mini_arm 声明了 actuator_control）
+    const sliderInfo = await cdp.eval(`(() => {
+      const hs = [...document.querySelectorAll('.panel h3')];
+      const h = hs.find(x => x.textContent.includes('关节控制'));
+      if (!h) return { found: false, sliders: [] };
+      const panel = h.parentElement;
+      const sliders = [...panel.querySelectorAll('input[type=range]')].map(s => ({
+        label: s.getAttribute('aria-label') || s.getAttribute('name') || '',
+        value: s.value, min: s.min, max: s.max,
+      }));
+      return { found: true, sliders };
+    })()`);
+    check("关节控制面板已渲染（含滑块）",
+          sliderInfo?.found === true && (sliderInfo?.sliders?.length ?? 0) > 0,
+          `滑块 ${sliderInfo?.sliders?.length ?? 0} 个：${(sliderInfo?.sliders ?? []).map(s => s.label).join(", ")}`);
+
+    // ★★ 核心：拖第一根滑块 ⇒ 该关节的「实际」必须变
+    //
+    // 拖到当前值 + 0.25 rad 并夹在滑块范围内（避免拖到边界外而无效）。
+    // 用原生 value setter + input 事件（React 受控组件的正确触发方式，
+    // 见 frontend/src/jointPanel.check.ts 的注释）。
+    const dragResult = await cdp.eval(`(() => {
+      const hs = [...document.querySelectorAll('.panel h3')];
+      const h = hs.find(x => x.textContent.includes('关节控制'));
+      if (!h) return { error: 'no joint panel' };
+      const panel = h.parentElement;
+      const s = panel.querySelector('input[type=range]');
+      if (!s) return { error: 'no slider' };
+
+      const label = s.getAttribute('aria-label') || '';
+      const before = Number(s.value);
+      const lo = Number(s.min), hi = Number(s.max);
+      let next = before + 0.25;
+      if (next > hi) next = before - 0.25;
+      if (next < lo || next > hi) return { error: 'slider range too small', lo, hi, before };
+
+      // React 受控 input：必须走**原生 setter**，否则 _valueTracker
+      // 认为值没变 ⇒ onChange 根本不触发（详见 jointPanel.check.ts）。
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype, 'value'
+      ).set;
+      setter.call(s, String(next));
+      s.dispatchEvent(new Event('input', { bubbles: true }));
+
+      return { label, before, next, lo, hi };
+    })()`);
+    check("能拖动关节滑块（派发真实 input 事件）",
+          !dragResult?.error,
+          dragResult?.error ?? `${dragResult?.label}: ${dragResult?.before} → ${dragResult?.next}`);
+
+    // 等后端 step 完并回帧（MuJoCo 步子 + 网络往返）
+    await sleep(1500);
+
+    const afterDrag = await cdp.eval(`(() => {
+      const hs = [...document.querySelectorAll('.panel h3')];
+      const h = hs.find(x => x.textContent.includes('关节控制'));
+      if (!h) return { error: 'no joint panel' };
+      const panel = h.parentElement;
+      // 面板里每个关节有「命令 / 实际 / 预演 / 限位」几行
+      const rows = [...panel.querySelectorAll('tr')]
+        .map(r => [...r.querySelectorAll('td')].map(td => td.textContent.trim()))
+        .filter(c => c.length >= 2);
+      return { rows };
+    })()`);
+
+    // 「实际」列出现一个明显非零的值 ⇒ 说明后端真的动了
+    //
+    // ⚠️ 解析用 `parseFloat` 而不是 `match(/-?\\d+\\.\\d+/)`：
+    //    面板对"未知"显示的是「后端未上报」这种纯文字，
+    //    正则取不到时会静默变成 NaN 被 filter 掉 ——
+    //    于是"所有关节都没上报"和"上报了零"变得无法区分。
+    //    这里保留"取不到就是 NaN"，下面的 detail 会把原始文本打出来。
+    const rows = afterDrag?.rows ?? [];
+    const actualRowIdx = rows.findIndex(r => r[0].includes("实际"));
+    const actualText = actualRowIdx >= 0 ? rows[actualRowIdx][1] ?? "" : null;
+    const actualNum = actualText === null ? NaN : parseFloat(actualText);
+    check("★★ 拖动滑块后关节「实际」值真的变了（端到端闭环打通）",
+          Number.isFinite(actualNum) && Math.abs(actualNum) > 0.01,
+          `「实际」原文 = ${JSON.stringify(actualText)} → ${actualNum}（|值| > 0.01 才算真的动了）`);
+
+    // 表格里应当同时有「命令」与「实际」两行 ⇒ State ≠ Command 可见
+    const hasBothRows = rows.some(r => r[0].includes("命令")) &&
+                        rows.some(r => r[0].includes("实际"));
+    check("面板同时显示「命令」与「实际」（State ≠ Command 可观测）",
+          hasBothRows,
+          hasBothRows ? "" : `行首列：${JSON.stringify(rows.map(r => r[0]).slice(0, 8))}`);
+
+    const shot4 = await capture(cdp);
+    writeFileSync(join(OUT_DIR, "04-joint-command.png"), shot4);
 
     writeSummary();
     return results.some(r => !r.ok) ? 1 : 0;

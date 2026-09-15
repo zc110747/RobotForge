@@ -196,6 +196,33 @@ export function commandableJoints(joints: readonly JointDTO[]): readonly JointDT
 // 客户端
 // ---------------------------------------------------------------------------
 
+/**
+ * 客户端状态的**不可变快照**，供 `useSyncExternalStore` 用。
+ *
+ * ## 为什么必须由客户端自己缓存
+ *
+ * `useSyncExternalStore` 用 `Object.is` 比较前后两次 `getSnapshot()` 的返回值，
+ * 决定要不要重渲染。若 `getSnapshot` 每次现造一个对象，它会**每次都认为变了**
+ * ⇒ 无限重渲染（React 会直接抛 "The result of getSnapshot should be cached"）。
+ *
+ * 若换成"每个字段各用一个 useSyncExternalStore"，返回的是 primitives，
+ * 比较没问题 —— 但那样就有 N 个订阅器，而 `notify()` 是**一次**通知所有
+ * 订阅器的；React 在同一个 tick 里逐个收敛，遇到"快照没变"的那个会跳过
+ * 重渲染。**字段之间的一致性就只能靠运气**（实测踩到：连接状态更新了，
+ * 但取帧的那个订阅器没跟着重渲染，界面显示"未连接"）。
+ *
+ * ⇒ 唯一的正确做法：快照是**一个**对象，且在 `notify()` 里**重建一次**。
+ *   这样"有变化"这件事有唯一真值源，四个字段永远同进同出。
+ */
+export interface WsSnapshot {
+  readonly state: ConnectionState;
+  readonly lastState: RobotStateFrame | null;
+  readonly lastError: ErrorFrame | null;
+  readonly connectCount: number;
+  /** 目标机器人（命令的 `robot` 字段 / 帧过滤依据）。 */
+  readonly robot: string | null;
+}
+
 export interface WsClient {
   readonly state: ConnectionState;
   /** 最近一次收到的状态帧；**断线后不清空**（见文件头）。 */
@@ -204,6 +231,12 @@ export interface WsClient {
   readonly lastError: ErrorFrame | null;
   /** 已成功建连次数（用于区分"首次连上"与"重连成功"）。 */
   readonly connectCount: number;
+  /**
+   * 取当前快照。**引用稳定**：同一状态连续调用返回同一对象。
+   *
+   * 它专为 `useSyncExternalStore` 准备 —— 见 `WsSnapshot` 的说明。
+   */
+  getSnapshot(): WsSnapshot;
   sendCommand(jointTargets: Readonly<Record<string, number>>): boolean;
   /** 主动关闭（**不再**自动重连）。 */
   dispose(): void;
@@ -237,10 +270,52 @@ export function createWsClient(robot: string | null, options: WsClientOptions = 
   let delay = baseDelay;
   let disposed = false;
   let robotId = robot;
+  /**
+   * 连接**代际号**：每次 `connect()` 自增，用来给这一轮的所有回调发身份证。
+   *
+   * 为什么需要它（而不是只看 `disposed`）：
+   * `disposed` 是个布尔，只能回答"**现在**这一轮是不是被主动关了"。
+   * 它回答不了"**这个回调**属于哪一轮"。而 React StrictMode 的
+   * `mount → cleanup → mount` 会让旧轮次的回调（旧 socket 的 close、
+   * 旧定时器的重连）在**新一轮已经开着**的时候才被触发 —— 此时
+   * `disposed === false`，只判布尔的守卫会放行，于是：
+   * - 旧 socket 的 close 会把刚建好的 `socket` 置 `null`（误杀新连接）；
+   * - 旧定时器会再调一次 `connect()`，造出"两根并存的 socket"。
+   * 两条都会表现成"连不上"。代际号让这些回调直接自废。
+   */
+  let generation = 0;
   const listeners = new Set<() => void>();
 
+  /**
+   * 缓存的快照。**只在 `notify()` 里重建**，这样"有变化"这件事
+   * 有唯一的真值源 —— 见 `WsSnapshot` 的说明。
+   *
+   * 初始值手动构造一次（`notify()` 还没跑过，但 `getSnapshot()` 必须可调）。
+   */
+  let snapshot: WsSnapshot = {
+    state,
+    lastState: null,
+    lastError: null,
+    connectCount: 0,
+    robot: robotId,
+  };
+
   function notify(): void {
+    // ★ 先重建快照，**再**通知订阅者。
+    //   反过来的话，订阅者在回调里（或 React 收敛时）读到的还是旧快照 ——
+    //   表现成"通知到了但值没变"，React 会跳过重渲染，界面停在旧状态。
+    snapshot = {
+      state,
+      lastState,
+      lastError,
+      connectCount,
+      robot: robotId,
+    };
     for (const fn of listeners) fn();
+  }
+
+  function getSnapshot(): WsSnapshot {
+    return snapshot;
   }
 
   function url(): string {
@@ -293,21 +368,76 @@ export function createWsClient(robot: string | null, options: WsClientOptions = 
     notify();
   }
 
+  /**
+   * 开始连接。刻意不自动执行 —— 何时开连由调用方决定。
+   *
+   * ## ★ `connect()` 会**解除** `dispose()` 的状态
+   *
+   * 这一条是被 React StrictMode 逼出来的，且不写清楚就会被后人"优化"掉：
+   *
+   * ```text
+   * <React.StrictMode> 在开发模式下把 effect 跑成交错的两轮：
+   *   mount  → effect 跑（connect）
+   *   unmount→ cleanup 跑（dispose）
+   *   mount  → effect 再跑（connect）
+   * ```
+   *
+   * 若 `dispose()` 把 `disposed` 永久置真、而 `connect()` 在开头
+   * `if (disposed) return`，那么第三次调用（第二次 mount）会被挡掉 ——
+   * **整个页面永远连不上**。
+   *
+   * 症状与"服务器拒绝连接"一模一样（面板显示"未连接"），
+   * 但浏览器控制台里那句真话是：
+   * ```text
+   * WebSocket connection to 'ws://…/ws' failed:
+   *   WebSocket is closed before the connection is established.
+   * ```
+   * —— 即"我们自己把它关了"。而 `disposed` 是个**内部布尔**，
+   * 从外面（面板、状态、错误帧）完全看不出来。
+   * 实测：在页面里手动 `new WebSocket(...)` 是**成功**的，
+   * 这恰好排除了"地址/代理/后端"三个方向的怀疑。
+   *
+   * ⇒ `disposed` 的含义收窄为"**当前**这一轮连接已被主动关闭"，
+   *   而不是"这个客户端对象作废了"。要作废一个客户端，
+   *   由调用方把它换掉（`useRef` 里换新对象）即可。
+   */
   function connect(): void {
-    if (disposed) return;
+    // ★ 清除"已主动关闭"标记（见上）。
+    disposed = false;
     if (socket !== null) return; // 已有一根在连/已连
+    // ⚠️ 这里**不能**复位 `delay`。
+    //
+    //   退避的意义是"连续失败时越来越慢"；若每次尝试都从 baseDelay 重来，
+    //   就退化成"断网后每 100ms 硬撞一次" —— 既打满 CPU 又刷满日志。
+    //   复位只发生在**真的连上了**（见 `open` 事件里的 `delay = baseDelay`）。
+    //   自检 `runBackoff` 就是靠这条抓到的（期望 100,200,400,400,400，
+    //   实得 100,100,100,100,100）。
     setState("connecting");
+
+    // ★ 代际号：这一轮连接尝试的身份证。
+    //
+    //   为什么需要它（而不是只看 `disposed`）：
+    //   `dispose()` 之后可能**又** `connect()`（React StrictMode 的
+    //   mount→cleanup→mount，见上面的长注释）。此时旧的那些回调
+    //   （旧 socket 的 close、旧 timer 的重连）必须**失效**，
+    //   否则会出现"两次 mount ⇒ 两根并存的 socket"，而 `socket !== null`
+    //   这条守卫只挡得住其中一半。
+    //
+    //   `disposed` 只能回答"现在是关的还是开的"，回答不了
+    //   "这个回调属于哪一轮"。代际号才能。
+    const gen = ++generation;
 
     let ws: WebSocketLike;
     try {
       ws = makeSocket(url());
     } catch {
-      scheduleReconnect();
+      scheduleReconnect(gen);
       return;
     }
     socket = ws;
 
     ws.addEventListener("open", () => {
+      if (gen !== generation) return; // 属于上一轮的 socket，丢弃
       connectCount += 1;
       delay = baseDelay; // 连上就复位退避 —— 否则一次抖动会让下次重连等很久
       setState("open");
@@ -315,6 +445,7 @@ export function createWsClient(robot: string | null, options: WsClientOptions = 
     });
 
     ws.addEventListener("message", (ev) => {
+      if (gen !== generation) return;
       const data = (ev as { data?: unknown })?.data;
       if (data !== undefined) handleFrame(data);
     });
@@ -327,18 +458,29 @@ export function createWsClient(robot: string | null, options: WsClientOptions = 
     });
 
     ws.addEventListener("close", () => {
+      if (gen !== generation) return; // 旧轮次的 close，不排重连
       socket = null;
       setState("closed");
-      scheduleReconnect();
+      scheduleReconnect(gen);
     });
   }
 
-  function scheduleReconnect(): void {
+  /**
+   * 排一次重连。
+   *
+   * @param gen 发起这次排期的**代际号**。定时器到期时代际若不匹配，
+   *            说明期间发生过 `dispose()` 或新一轮 `connect()` ⇒ 放弃这次重连。
+   *            只判 `disposed` 是不够的（见 `connect` 里的说明）。
+   */
+  function scheduleReconnect(gen: number): void {
     if (disposed) return;
     const wait = delay;
     delay = Math.min(delay * factor, maxDelay);
     timer(() => {
-      if (!disposed) connect();
+      // 两道守卫都要：
+      // - `disposed` 挡"这期间被主动关了"；
+      // - `gen === generation` 挡"这期间已经开了新一轮"（旧定时器不得再开一个）。
+      if (!disposed && gen === generation) connect();
     }, wait);
   }
 
@@ -364,6 +506,11 @@ export function createWsClient(robot: string | null, options: WsClientOptions = 
     },
     dispose() {
       disposed = true;
+      // ★ 递增代际：让所有**在飞**的回调（旧 socket 的 open/message/close、
+      //   旧定时器的重连）立即失效。只置 `disposed` 不够 —— 若随后又
+      //   `connect()`（StrictMode 的第二次 mount），`disposed` 会被复位成
+      //   false，那些旧回调就"复活"了。
+      generation += 1;
       const s = socket;
       socket = null;
       setState("closed");
@@ -383,7 +530,13 @@ export function createWsClient(robot: string | null, options: WsClientOptions = 
     },
     /** 机器人切换：只影响**后续**帧的过滤与命令的 robot 字段。 */
     setRobot(next: string | null) {
+      if (robotId === next) return;
       robotId = next;
+      // 要 notify：`snapshot.robot` 也是 UI 会读的字段
+      // （链路面板显示"订阅机器人"）。不通知的话快照里的 robot 会陈旧，
+      // 而陈旧的那个值恰好被用来判断"这帧是不是本机器人的"。
+      notify();
     },
+    getSnapshot,
   };
 }

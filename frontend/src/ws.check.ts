@@ -237,6 +237,103 @@ function runRoundTrip(c: Checker): void {
 }
 
 // =============================================================================
+// 检查 3b：getSnapshot —— React 订阅契约（引用稳定性 + 同进同出）
+// =============================================================================
+
+/**
+ * ## 这一节为什么必须存在
+ *
+ * `getSnapshot()` 是 `useSyncExternalStore` 的契约点，它有**两条**硬要求，
+ * 而违反任一条**都不会抛错**：
+ *
+ * ```text
+ * ① 引用稳定 —— 状态没变时必须返回**同一个对象**。
+ *    每调用一次就现造一个 ⇒ React 认为"每次都变了" ⇒ 无限重渲染。
+ *
+ * ② 变化后必须**整个换掉** —— 不能只换其中几个字段。
+ *    若四个字段各用一个 useSyncExternalStore，React 会对"快照没变"的
+ *    那个跳过重渲染，字段之间的一致性就只能靠运气。
+ *    实测症状：连接状态显示"未连接"，但面板/滑块全都正常渲染。
+ * ```
+ *
+ * ⇒ 判据落在两条上：**同一状态连续取 = 同一引用**、
+ *   **一次 notify = 快照整体换新且四个字段同进同出**。
+ */
+function runSnapshot(c: Checker): void {
+  const clock = fakeClock();
+  const sockets: FakeSocket[] = [];
+  const client = createWsClient("mini_arm", {
+    socketFactory: (url) => {
+      const s = new FakeSocket(url);
+      sockets.push(s);
+      return s;
+    },
+    timer: clock.timer,
+  });
+
+  // ① 未连接时连续取两次 —— 必须是同一个对象
+  const s0 = client.getSnapshot();
+  const s0b = client.getSnapshot();
+  c.ok(s0 === s0b, "同一状态下连续 getSnapshot 返回**同一引用**（否则 React 无限重渲染）",
+       `两次取到 ${s0 === s0b ? "同一对象" : "不同对象"}`);
+  c.eq(s0.state, "closed", "初始快照 state = closed");
+  c.eq(s0.lastState, null, "初始快照 lastState = null");
+  c.eq(s0.robot, "mini_arm", "初始快照带 robot（命令的 robot 字段来源）");
+
+  // ② connect 是状态变化 ⇒ 必须换新快照
+  client.connect();
+  const s1 = client.getSnapshot();
+  c.ok(s1 !== s0, "连接状态变化 ⇒ 快照换新", "引用没变 ⇒ 订阅者收不到变化");
+  c.eq(s1.state, "connecting", "新快照的 state = connecting");
+  c.ok(client.getSnapshot() === s1, "变化后连续取仍是同一引用", "又现造了新对象");
+
+  // ③ open + 收帧：state / lastState / connectCount **三个字段一起**更新
+  //
+  //    ★ 这是这条判据的核心：它们必须在**同一个**快照里是新的。
+  //      若拆成三个独立的 useSyncExternalStore，就可能出现
+  //      "state 更新了但 lastState 还是旧的" —— 恰好是那个实测症状。
+  sockets[0]!.emit("open");
+  sockets[0]!.emit("message", {
+    data: JSON.stringify({
+      type: "robot_state",
+      robot: "mini_arm",
+      joints: { shoulder: 0.42 },
+      velocities: { shoulder: 0 },
+      end_effector: null,
+      status: "running",
+      timestamp: 0.02,
+    }),
+  });
+
+  const s2 = client.getSnapshot();
+  c.ok(s2 !== s1, "收到帧 ⇒ 快照换新");
+  c.eq(s2.state, "open", "同一快照里 state 已更新为 open");
+  c.eq(s2.connectCount, 1, "同一快照里 connectCount 已更新为 1");
+  c.close(s2.lastState?.joints["shoulder"] ?? NaN, 0.42, 0, "同一快照里 lastState 已更新");
+  c.eq(
+    [s2.state, s2.connectCount, s2.lastState !== null].join(","),
+    "open,1,true",
+    "★ 三个字段**同进同出**（不是分三次各更新一个）"
+  );
+
+  // ④ 切换机器人也要换快照（否则快照里的 robot 陈旧，
+  //    而它恰好被用来判断"这帧是不是本机器人的"）
+  const s3 = client.getSnapshot();
+  client.setRobot("other_arm");
+  const s4 = client.getSnapshot();
+  c.ok(s4 !== s3, "setRobot ⇒ 快照换新", "robot 字段陈旧会导致帧过滤用错机器人");
+  c.eq(s4.robot, "other_arm", "新快照的 robot 已更新");
+
+  // ⑤ 同一个机器人再设一次 ⇒ 不该换快照（值是幂等的）
+  const s5 = client.getSnapshot();
+  client.setRobot("other_arm");
+  c.ok(client.getSnapshot() === s5, "setRobot 到**同一个**值 ⇒ 不换快照（幂等）",
+       "每次调用都换 ⇒ 浪费重渲染");
+
+  client.dispose();
+}
+
+// =============================================================================
 // 检查 4：未 open 时发命令返回 false
 // =============================================================================
 
@@ -608,6 +705,7 @@ function main(): number {
   runBuildCommand(c);
   runCommandableJoints(c);
   runRoundTrip(c);
+  runSnapshot(c);
   runSendBeforeOpen(c);
   runBackoff(c);
   runErrorEvent(c);
@@ -622,6 +720,7 @@ function main(): number {
   console.log("WebSocket 客户端自检（ws.ts）");
   console.log("─".repeat(62));
   console.log("被测：命令构造 / 关节挑选 / 连接 / 退避 / 帧过滤 / 断线保留 / 卸载");
+  console.log("      getSnapshot 契约（引用稳定 + 字段同进同出）");
   console.log("假体：FakeSocket + 假时钟（无真实网络、无真实 sleep）");
   console.log("─".repeat(62));
 

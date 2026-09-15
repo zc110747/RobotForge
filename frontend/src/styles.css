@@ -93,6 +93,19 @@ body,
   color: var(--bad);
 }
 
+/*
+ * 面板里的错误行（`<p className="bad">`）。
+ *
+ * ⚠️ 这里**不引入新颜色** —— 复用既有的 `--bad`。
+ *    本工程的 UI 约定是"深底 + 深卡片 + 统一浅色文字，无装饰色"
+ *    （见 USER.md 的 UI 偏好）。唯一的例外是**告警**，
+ *    而告警用既有的那一个红已经够了。
+ */
+.panel > p.bad {
+  color: var(--bad);
+  word-break: break-word;
+}
+
 .panel table {
   width: 100%;
   border-collapse: collapse;

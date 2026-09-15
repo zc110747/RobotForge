@@ -1,8 +1,64 @@
 # 前端自实现 sim（FK/IK）· 实现计划
 
-> 状态：**待确认**（确认后开工）
+> 状态：**已实现**（2026-09-15）
 > 基线：`d046fb7`，工作区干净，`pytest -q` 488 passed
 > 目标：前端有一份**自己的**运动学实现，与 Sim2Sim 保持一致的特性
+
+> ## 实施结果（回填）
+>
+> | 交付物 | 状态 | 证据 |
+> |---|---|---|
+> | `packages/mini_arm/kinematics/kinematics.js` | ✅ | `affcdb3` |
+> | `kinematics.d.ts`（手写类型声明） | ✅ | `c7a67c0` |
+> | 交叉验证脚本（JS ↔ Python ↔ Core） | ✅ | 749 条断言，自检 5/5 |
+> | `frontend/src/sim/predictor.ts`（限幅 + 一阶滞后） | ✅ | `c7a67c0` |
+> | `frontend/src/sim/useGhostPrediction.ts`（驱动） | ✅ | 见 `ghost.check.ts` |
+> | `frontend/src/ws.ts`（§49 前端出入口） | ✅ | `7892efb` |
+> | `frontend/src/JointPanel.tsx`（§59 命令面板） | ✅ | `7892efb` |
+> | `RobotScene` 关节角 + `GhostArm` | ✅ | `render.check.ts` 124 项 |
+> | `App.tsx` 接线 | ✅ | 本 commit |
+> | `tools/e2e_browser_check.mjs` 第 ⑧ 节 | ✅ | 见下 |
+>
+> ### 实测偏差（交叉验证，用于判断容差是否合理）
+>
+> ```text
+> FK vs Python 解析解 : 1.963e-17 m
+> 解析解 vs Core 通用 : 1.127e-16 m
+> IK 关节角           : 6.023e-15 rad
+> IK positionError    : 1.480e-16 m
+> ```
+>
+> 容差取 `TOL_FK_POS = 1e-15`、`TOL_IK_JOINT = 1e-13`、
+> `ACOS_RESOLUTION = 6e-8`（`2·acos(dot)` 在 dot→1 处的数值分辨率下限）。
+>
+> ### 与原计划的两处偏离
+>
+> ```text
+> ① `manifest.yaml` 加了 `js` 段（计划里的"待拍板第 1 点"）
+>    —— Core 的 manifest 校验容忍未知键，所以零 Core 改动。已验证：
+>       `cli show` 输出逐字不变、`validation.ok=True`、488 passed。
+>
+> ② 预演 ghost **上屏**了，但可开关（计划里的"待拍板第 2 点"）
+>    —— 默认开。原因是它把 §29 的 State ≠ Command 变成肉眼可见的事实，
+>       教学价值正是这个项目的卖点；关掉的成本只是一个 checkbox。
+> ```
+>
+> ### 一个计划里没预料到的坑（值得记住）
+>
+> **预演的命令是"持续目标"，不是"一次性脉冲"。**
+>
+> 第一版在每帧 tick 里无条件清空命令队列，于是预演只推进一帧就停住 ——
+> 症状是"拖一点点，幽灵臂只动一丝"，看起来像"滞后系数算错了"。
+> 后端语义也是持续的（`send_command` 把目标存进 actuator 直到被改）。
+>
+> 顺带带来两条推论：
+> ```text
+> ① 不能断言"未下发的关节逐位不变" —— 它仍在朝**之前**的目标收敛
+>    （实测：从 0.39999210 走到 0.39999999，是在正确地收敛到 0.4）
+>    ⇒ 判据改成"不朝 0 跑 + 不越过目标 + 有界"
+> ② 收敛后 `next !== cur` 恒为真 ⇒ 必须有一个"已到位"阈值
+>    停止 setState，否则每帧重渲染整棵 scene graph
+> ```
 
 ---
 
@@ -301,7 +357,10 @@ Step 7  全量回归：pytest 488 + 各 Phase accept + e2e
 
 ---
 
-## 6. 需要你拍板的两点
+## 6. 需要你拍板的两点（**已决**，留档）
+
+> 两点都已按"加 `js` 段"+"ghost 上屏但可开关"实施，
+> 理由见文首「与原计划的两处偏离」。
 
 1. **`manifest.yaml` 的 `js` 段是否需要？**
    如果 Core 的 manifest 校验会因未知键报错，加它就要连校验一起改。
