@@ -41,6 +41,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
+/// <reference path="../../../../packages/mini_arm/kinematics/kinematics.d.ts" />
 import {
   BASE_HEIGHT,
   SHOULDER_OFFSET,
@@ -61,11 +62,10 @@ import {
   IkError,
   UnreachableError,
   LimitViolationError,
-  quatNormalized,
-  quatMul,
   quatFromAxisAngle,
   quatIdentity,
 } from "../../../../packages/mini_arm/kinematics/kinematics.js";
+import type { Branch, Vec3, Quat, Pose } from "../../../../packages/mini_arm/kinematics/kinematics.js";
 
 // =============================================================================
 // 断言器（与 semantics.check.ts 同风格：每次新建 failures，不是模块级全局）
@@ -191,12 +191,9 @@ function compareOrientationError(got: number, ref: number, c: Checker, check: st
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = resolve(HERE, "fixtures", "kinematics.json");
 
-type Vec3 = readonly [number, number, number];
-type Quat = readonly [number, number, number, number];
-interface Pose {
-  readonly position: Vec3;
-  readonly orientation: Quat;
-}
+// Pose / Quat / Vec3 直接复用包内 `.d.ts` 的声明（不在这里另写一份）：
+// 另写一份的话，"夹具的 branch 是 string、引擎的 branch 是 Branch" 这类
+// 形状分歧会被掩盖，而不是在 `tsc --noEmit` 时暴露。
 interface Fixture {
   readonly constants: Record<string, number | string[]>;
   readonly fkCases: ReadonlyArray<{ name: string; q: Record<string, number>; analytic: Pose; generic: Pose }>;
@@ -209,13 +206,13 @@ interface Fixture {
   readonly ikCases: ReadonlyArray<{
     name: string;
     target: Pose;
-    branch: string;
+    branch: Branch;
     expect: { joints: Record<string, number>; branch: string; positionError: number; orientationError: number };
   }>;
   readonly ikErrors: ReadonlyArray<{
     name: string;
     target: Pose;
-    branch: string;
+    branch: Branch;
     errorType: string;
     distance?: number;
     reachMin?: number;
@@ -280,41 +277,47 @@ function runConstants(c: Checker): void {
 // =============================================================================
 
 /** 观测到的最大偏差（打印出来，让"容差够不够"有据可依） */
-const observed: Record<string, number> = { fkVsPython: 0, fkVsCore: 0, ikJoints: 0, ikPosErr: 0 };
+const observed = {
+  fkVsPython: 0,
+  fkVsCore: 0,
+  ikJoints: 0,
+  ikPosErr: 0,
+};
 
 function runFk(c: Checker): void {
   for (const kase of fixture.fkCases) {
     const got = forwardKinematics(MODEL, kase.q);
+    const ref = kase.analytic;
 
     const dPos = Math.hypot(
-      got.position[0] - kase.analytic.position[0],
-      got.position[1] - kase.analytic.position[1],
-      got.position[2] - kase.analytic.position[2]
+      got.position[0] - ref.position[0],
+      got.position[1] - ref.position[1],
+      got.position[2] - ref.position[2]
     );
     observed.fkVsPython = Math.max(observed.fkVsPython, dPos);
     c.close(dPos, 0, TOL_FK_POS, `FK 位置 vs Python 解析解 [${kase.name}]`);
 
     // 姿态：四元数取 |dot| 比较（q 与 -q 是同一旋转）
     const dot = Math.abs(
-      got.orientation[0] * kase.analytic.orientation[0] +
-        got.orientation[1] * kase.analytic.orientation[1] +
-        got.orientation[2] * kase.analytic.orientation[2] +
-        got.orientation[3] * kase.analytic.orientation[3]
+      got.orientation[0] * ref.orientation[0] +
+        got.orientation[1] * ref.orientation[1] +
+        got.orientation[2] * ref.orientation[2] +
+        got.orientation[3] * ref.orientation[3]
     );
     c.close(dot, 1, 1e-12, `FK 姿态 vs Python 解析解 [${kase.name}]`);
 
     // 与 +q 的分量差（本机构不产生符号翻转，直接分量比更严格）
     let maxComp = 0;
     for (let i = 0; i < 4; i++) {
-      maxComp = Math.max(maxComp, Math.abs(got.orientation[i] - kase.analytic.orientation[i]));
+      maxComp = Math.max(maxComp, Math.abs(got.orientation[i]! - ref.orientation[i]!));
     }
     c.close(maxComp, 0, TOL_FK_QUAT, `FK 姿态分量 vs Python [${kase.name}]`);
 
     // 顺带：与 Core 通用解也在容差内（证明 JS 与"独立路径"对得上）
     const dCore = Math.hypot(
-      kase.analytic.position[0] - kase.generic.position[0],
-      kase.analytic.position[1] - kase.generic.position[1],
-      kase.analytic.position[2] - kase.generic.position[2]
+      ref.position[0] - kase.generic.position[0],
+      ref.position[1] - kase.generic.position[1],
+      ref.position[2] - kase.generic.position[2]
     );
     observed.fkVsCore = Math.max(observed.fkVsCore, dCore);
     c.ok(dCore < 1e-12, `解析解与 Core 通用解一致 [${kase.name}]`, `差 ${dCore.toExponential(3)} m`);
@@ -332,17 +335,17 @@ function runFkContracts(c: Checker): void {
 
     let maxComp = 0;
     for (let i = 0; i < 3; i++) {
-      maxComp = Math.max(maxComp, Math.abs(got.position[i] - ref.position[i]));
+      maxComp = Math.max(maxComp, Math.abs(got.position[i]! - ref.position[i]!));
     }
     for (let i = 0; i < 4; i++) {
-      maxComp = Math.max(maxComp, Math.abs(got.orientation[i] - ref.orientation[i]));
+      maxComp = Math.max(maxComp, Math.abs(got.orientation[i]! - ref.orientation[i]!));
     }
     c.close(maxComp, 0, 1e-15, `FK 契约 [${contract.name}]`);
 
     // 且夹具自己也一致（防止夹具构造错了却"JS 通过"）
     let refSelf = 0;
     for (let i = 0; i < 3; i++) {
-      refSelf = Math.max(refSelf, Math.abs(contract.analytic.position[i] - ref.position[i]));
+      refSelf = Math.max(refSelf, Math.abs(contract.analytic.position[i]! - ref.position[i]!));
     }
     c.close(refSelf, 0, 1e-15, `FK 契约的 Python 参考自洽 [${contract.name}]`);
   }
@@ -362,16 +365,13 @@ function runIk(c: Checker): void {
     c.eq(got.branch, kase.expect.branch, `IK 分支字符串 [${kase.name}]`);
 
     for (const id of JOINT_ORDER) {
-      const ref = kase.expect.joints[id];
-      const diff = Math.abs(got.jointPositions[id] - ref);
+      const ref = kase.expect.joints[id]!;
+      const diff = Math.abs(got.jointPositions[id]! - ref);
       observed.ikJoints = Math.max(observed.ikJoints, diff);
       c.close(diff, 0, TOL_IK_JOINT, `IK 关节角 ${id} [${kase.name}]`);
     }
 
-    observed.ikPosErr = Math.max(
-      observed.ikPosErr,
-      Math.abs(got.positionError - kase.expect.positionError)
-    );
+    observed.ikPosErr = Math.max(observed.ikPosErr, Math.abs(got.positionError - kase.expect.positionError));
     c.close(
       got.positionError,
       kase.expect.positionError,
@@ -432,7 +432,10 @@ function runIkInvariants(c: Checker): void {
     const t2 = kase.q["elbow"] ?? 0;
     if (Math.abs(t2) < 1e-3 || Math.abs(Math.abs(t2) - Math.PI) < 1e-3) continue;
 
-    for (const branch of ["elbow_up", "elbow_down"]) {
+    // 显式标 `Branch[]`：不标的话 TS 推成 `string[]`，
+    // 会在 `{ branch }` 处报"string 不能赋给 Branch"，与语义无关。
+    const bothBranches: readonly Branch[] = ["elbow_up", "elbow_down"];
+    for (const branch of bothBranches) {
       let sol;
       try {
         sol = solveIk(MODEL, kase.analytic, { branch });
@@ -471,11 +474,8 @@ function runIkInvariants(c: Checker): void {
   const one = solveIkAll(MODEL, fullExtend);
   c.ok(one.length === 1, "solveIkAll 在退化位形去重成 1 个解", `实得 ${one.length}`);
   if (one.length === 1) {
-    c.ok(
-      one[0].branch.includes("degenerate"),
-      "退化解被标注 degenerate",
-      `branch = ${one[0].branch}`
-    );
+    const only = one[0]!;
+    c.ok(only.branch.includes("degenerate"), "退化解被标注 degenerate", `branch = ${only.branch}`);
   }
 
   // ③ 可达范围与常量自洽
@@ -487,13 +487,15 @@ function runIkInvariants(c: Checker): void {
   const empty = forwardKinematics(MODEL, {});
   const zero = forwardKinematics(MODEL, { base_yaw: 0, shoulder: 0, elbow: 0 });
   let maxDiff = 0;
-  for (let i = 0; i < 3; i++) maxDiff = Math.max(maxDiff, Math.abs(empty.position[i] - zero.position[i]));
+  for (let i = 0; i < 3; i++) maxDiff = Math.max(maxDiff, Math.abs(empty.position[i]! - zero.position[i]!));
   c.close(maxDiff, 0, 0, "FK 空字典 = 零位形（缺关节按 0）");
 
   // ⑤ 未知 branch ⇒ IkError（且不是 Unreachable/Limit 子类）
   let unknownErr: unknown = null;
   try {
-    solveIk(MODEL, bentTarget, { branch: "nope" });
+    // 刻意传一个**不在联合类型里**的值：这里就是要验运行期的容错，
+    // 用 `as unknown as Branch` 绕过编译期检查，否则这条路径测不到。
+    solveIk(MODEL, bentTarget, { branch: "nope" as unknown as Branch });
   } catch (exc) {
     unknownErr = exc;
   }
@@ -512,7 +514,7 @@ function runIkInvariants(c: Checker): void {
   for (let i = 0; i < 4; i++) {
     axisSensitivity = Math.max(
       axisSensitivity,
-      Math.abs(normalPose.orientation[i] - weirdPose.orientation[i])
+      Math.abs(normalPose.orientation[i]! - weirdPose.orientation[i]!)
     );
   }
   c.ok(
@@ -584,14 +586,19 @@ const SELF_TESTS: SelfTest[] = [
     name: "IK 配对符号写反 ⇒ 关节角判据变红",
     run: () => {
       const kase = fixture.ikCases.find(
-        (k) => !k.expect.branch.includes("degenerate") && Math.abs(k.expect.joints["shoulder"]) > 1e-3
+        (k) => !k.expect.branch.includes("degenerate") && Math.abs(k.expect.joints["shoulder"]!) > 1e-3
       );
       if (!kase) return false; // 找不到可注入的用例 ⇒ 夹具退化，算自检失败
       const c = newChecker();
       const got = solveIk(MODEL, kase.target, { branch: kase.branch });
-      const tampered = { ...kase.expect.joints, shoulder: -kase.expect.joints["shoulder"]! };
+      // `tampered` 显式标成 `Record<string, number>`：原对象只有 `shoulder`
+      // 一个键，不标的话 `tampered[id]` 会被推成 `number | undefined`。
+      const tampered: Record<string, number> = {
+        ...kase.expect.joints,
+        shoulder: -kase.expect.joints["shoulder"]!,
+      };
       for (const id of JOINT_ORDER) {
-        c.close(Math.abs(got.jointPositions[id] - tampered[id]!), 0, TOL_IK_JOINT, `tampered ${id}`);
+        c.close(Math.abs(got.jointPositions[id]! - tampered[id]!), 0, TOL_IK_JOINT, `tampered ${id}`);
       }
       return c.failures.length > 0;
     },
@@ -607,7 +614,7 @@ const SELF_TESTS: SelfTest[] = [
       const c = newChecker();
       const got = solveIk(MODEL, kase.target, { branch: kase.branch });
       const flipped = kase.expect.branch === "elbow_up" ? "elbow_down" : "elbow_up";
-      c.eq(got.branch, flipped, "tampered branch");
+      c.eq(got.branch, flipped as Branch, "tampered branch");
       return c.failures.length > 0;
     },
   },
@@ -629,11 +636,12 @@ const SELF_TESTS: SelfTest[] = [
     name: "四元数顺序写错 ⇒ 姿态分量判据变红",
     run: () => {
       const kase = fixture.fkCases[0];
+      if (!kase) return false;
       const q = kase.analytic.orientation;
-      const reordered: Quat = [q[3], q[0], q[1], q[2]]; // 误当成 wxyz
+      const reordered: Quat = [q[3]!, q[0]!, q[1]!, q[2]!]; // 误当成 wxyz
       const c = newChecker();
       let maxComp = 0;
-      for (let i = 0; i < 4; i++) maxComp = Math.max(maxComp, Math.abs(reordered[i] - q[i]));
+      for (let i = 0; i < 4; i++) maxComp = Math.max(maxComp, Math.abs(reordered[i]! - q[i]!));
       c.close(maxComp, 0, 1e-15, "tampered quat order");
       return c.failures.length > 0;
     },
