@@ -49,16 +49,73 @@ Bash 工具 run_in_background=true（配 -u 且重定向到文件）            
 **判据是数字**，不是"看起来没问题"。每次改动后核对：
 
 ```text
-pytest -q                        → 432 passed
+pytest -q                        → 488 passed
 pytest packages/mini_arm/tests   → 34 passed
 accept_phase1.py                 → 32/32
 accept_phase2.py                 → 56/56
 accept_phase3.py                 → 47/47
 accept_phase4.py                 → 65/65
 accept_phase5.py                 → 67/67
+accept_phase7.py                 → 50/50（内含全部上游，耗时约 20 min）
+accept_phase8.py                 → 96/96（内含全部上游，耗时约 20 min）
 ```
 
 数字变了（而不只是"仍然全绿"）说明测试被增删，必须解释原因。
+
+## 1.5 Phase PASS 后必须提交（用户明确要求）
+
+**每个 Phase 验收 PASS 后，Agent 自动 `git commit` 一次。不执行 `git push`。**
+
+理由：验收清单跑一次要 10~20 分钟；把"通过"的时刻固化成一个 commit，
+下次回归失败时能二分定位到"是哪个 Phase 的改动引入的"。
+全部攒到最后提交则失去这个能力，且单次 diff 会大到无法审阅。
+
+```bash
+cd D:/user_project/git/RobotForge
+
+# ① 先核对文件数（异常 ⇒ .gitignore 漏了目录）
+git status --porcelain --untracked-files=all | wc -l
+#   ↑ 必须是两位数。三位数以上几乎一定是 node_modules / .venv 漏了
+
+# ② 提交
+git add -A
+git commit -F- << 'MSGEOF'
+<Phase N 标题>
+
+验收：accept_phaseN.py → X/X
+基线：pytest -q → N passed
+MSGEOF
+```
+
+### ★ git 卫生：node_modules 必须忽略（踩过）
+
+原 `.gitignore` **没有** `node_modules` 这条规则 ⇒ 待跟踪文件 **8303** 个，
+其中 **8211 个来自 `frontend/node_modules`**。上传会引发大量问题。
+
+```text
+修法：.gitignore 加 node_modules/  →  8303 降到 88
+```
+
+同时应忽略：`.venv/`、`dist/`、`.vite/`、`*.tsbuildinfo`、`build/`、
+`__pycache__/`、`MUJOCO_LOG.TXT`（仿真每次重写）。
+
+`.workbuddy/` **不能整体忽略** —— `memory/` 与 `skills/` 是项目资产（要入库），
+`scratch/` 才是临时的。用精确规则：
+
+```gitignore
+.workbuddy/scratch/
+.workbuddy/**/__pycache__/
+```
+
+**检查手法**：提交前一定跑 `git status --porcelain -uall | wc -l`
+并用 `awk` 按顶层目录聚合看清来源（不要用 `sort -rn`，MSYS 会遮蔽成
+`System32\sort.exe` 导致静默失败）：
+
+```bash
+git status --porcelain --untracked-files=all | awk '{print $2}' \
+  | awk -F/ '{print $1"/"$2}' | awk '{c[$0]++} END {for (k in c) printf "%6d  %s\n", c[k], k}' \
+  | /usr/bin/sort -rn | head
+```
 
 ## 2. 三层测试分工（不要混）
 

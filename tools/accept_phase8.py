@@ -9,6 +9,16 @@
 
 退出码 0 = 全部通过；非 0 = 有未通过项。
 
+可选参数（**只用于快速迭代，出交付结论前不要带**）：
+
+```bash
+.venv/Scripts/python.exe tools/accept_phase8.py --skip-upstream-phase7
+```
+
+Phase 7 清单内部会再跑一遍 Phase 1~5，与本节第 [7] 节重复 ⇒ 合计三遍。
+加此参数可跳过 Phase 7 复查（省约 20 分钟），但该条会**计为 FAIL（跳过）**
+而不是 PASS，避免"跳过"被误读成"通过"。
+
 > ⚠️ 本脚本要跑全量 pytest + 上游 Phase 清单，**耗时约 12 分钟**。
 > **不要**在前台跑（本机沙箱会给长命令发 SIGTERM，产出 0 字节日志）。
 > 用后台执行并落文件：
@@ -80,6 +90,12 @@ import subprocess
 import sys
 import time
 import tokenize
+
+#: 跳过 Phase 7 复查（Phase 7 清单内含 Phase 1~5 复查，是整条链最慢的一环）。
+#: 仅用于快速迭代；**出交付结论前必须不带此参数完整跑一次**。
+SKIP_UPSTREAM_PHASE7 = "--skip-upstream-phase7" in sys.argv
+if SKIP_UPSTREAM_PHASE7:
+    sys.argv.remove("--skip-upstream-phase7")
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PY = ROOT / ".venv" / "Scripts" / "python.exe"
@@ -687,6 +703,19 @@ print("RESULT_JSON:" + json.dumps({{
     print(f"    全量: {tail}")
 
     # ================================================================ 7 上游 Phase
+    #
+    # ★ 为什么要有 --skip-upstream-phase7
+    #
+    # `accept_phase7.py` 清单的最后一节会**再跑一遍 Phase 1~5**，
+    # 而本脚本第 7 节刚刚跑过同样六个脚本 ⇒ 合计重复三遍，实测多花 20 分钟。
+    #
+    # Phase 7 的"无回归"证据在**同一会话里**已经由本脚本第 7 节的部分覆盖
+    # （Phase 1~5 全绿）。但 Phase 7 **自己的** 50 条检查不能由 Phase 8 代证 ——
+    # 所以默认**仍然完整跑** `accept_phase7.py`（正确性优先）。
+    #
+    # 需要快速迭代时用 `--skip-upstream-phase7`：跳过 Phase 7 复查，
+    # 但**打印醒目警告**并在汇总里计为一条 SKIP（不是 PASS），
+    # 免得"跳过"被误读成"通过"（§4.6 假检查同族）。
     print("\n[7] 上游 Phase 无回归")
     for name, script, expect in (
         ("Phase 1", "tools/accept_phase1.py", "Phase 1"),
@@ -694,7 +723,6 @@ print("RESULT_JSON:" + json.dumps({{
         ("Phase 3", "tools/accept_phase3.py", "Phase 3"),
         ("Phase 4", "tools/accept_phase4.py", "Phase 4"),
         ("Phase 5", "tools/accept_phase5.py", "Phase 5"),
-        ("Phase 7", "tools/accept_phase7.py", "Phase 7"),
     ):
         p = ROOT / script
         if not p.is_file():
@@ -710,6 +738,35 @@ print("RESULT_JSON:" + json.dumps({{
         ]
         check(
             f"{script} 仍然全通过（无回归）",
+            proc.returncode == 0,
+            " / ".join(summary) if summary else combined.strip()[-400:],
+        )
+        print(f"    {' / '.join(summary) if summary else '(无汇总行)'}")
+
+    # Phase 7 单独处理（因为它最慢：内含 Phase 1~5 复查）
+    p7 = ROOT / "tools" / "accept_phase7.py"
+    if SKIP_UPSTREAM_PHASE7:
+        print("    ⚠️ 已按 --skip-upstream-phase7 跳过 Phase 7 复查 —— "
+              "本次 Phase 8 的『上游无回归』证据不完整！")
+        check(
+            "tools/accept_phase7.py 仍然全通过（无回归）",
+            False,
+            "本次被 --skip-upstream-phase7 跳过：不能计为通过。"
+            "出交付结论前必须不带该参数完整跑一次。",
+        )
+    elif not p7.is_file():
+        check("tools/accept_phase7.py 存在", False, "缺失")
+    else:
+        proc = subprocess.run(
+            [str(PY), str(p7)], cwd=ROOT, capture_output=True, text=True, timeout=3600
+        )
+        combined = (proc.stdout or "") + (proc.stderr or "")
+        summary = [
+            ln.strip() for ln in combined.splitlines()
+            if "Phase 7" in ln and ("验收" in ln or "通过" in ln)
+        ]
+        check(
+            "tools/accept_phase7.py 仍然全通过（无回归）",
             proc.returncode == 0,
             " / ".join(summary) if summary else combined.strip()[-400:],
         )

@@ -122,7 +122,7 @@ tools/accept_phase2.py           → 56/56 ✅
 tools/accept_phase3.py           → 47/47 ✅
 tools/accept_phase4.py           → 65/65 ✅
 tools/accept_phase5.py           → 67/67 ✅
-tools/accept_phase7.py           → 84/84 ✅
+tools/accept_phase7.py           → 50/50 ✅
 tools/accept_phase8.py           → 96/96 ✅
 ```
 
@@ -135,7 +135,7 @@ tools/accept_phase8.py           → 96/96 ✅
 | 4 | Runtime + WebSocket | ✅ 65/65 |
 | 5 | MuJoCo Sim2Sim | ✅ 67/67 |
 | 6 | （spec 无 Phase 6） | — |
-| 7 | URDF 扩展点验证 | ✅ 84/84 |
+| 7 | URDF 扩展点验证 | ✅ 50/50 |
 | 8 | Geometry Asset 扩展点验证 | ✅ 96/96 |
 
 ### 扩展点：怎么加一个新格式（Phase 7 / 8 的用途）
