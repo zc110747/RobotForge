@@ -1,0 +1,1053 @@
+# RobotForge Sim2Sim 运动学闭环修正
+
+## 1. 目标
+
+针对当前 RobotForge 的 sim2sim 运动学系统，建立并验证完整的 FK/IK 闭环：
+
+```text
+Joint State
+    │
+    ▼
+   FK
+    │
+    ▼
+Cartesian Pose
+    │
+    ▼
+   IK
+    │
+    ▼
+Recovered Joint State
+    │
+    ▼
+   FK
+    │
+    ▼
+Recovered Cartesian Pose
+    │
+    ▼
+Pose Error
+```
+
+本阶段只解决 **sim2sim 数学模型的一致性问题**。
+
+暂不加入：
+
+* 真实机械臂标定
+* 舵机误差
+* 结构变形
+* 关节间隙
+* 真实硬件反馈
+* 机器学习补偿
+* 自动参数优化
+
+---
+
+# 2. 核心原则
+
+## 2.1 FK 与 IK 必须共享同一个 RobotModel
+
+禁止出现：
+
+```text
+FK 使用一套参数
+IK 使用另一套参数
+```
+
+必须统一使用：
+
+```text
+RobotModel
+```
+
+至少保证以下信息来源一致：
+
+```text
+link geometry
+joint origin
+joint axis
+joint limits
+joint type
+joint order
+coordinate convention
+unit convention
+```
+
+FK 与 IK 不允许各自硬编码机器人尺寸。
+
+---
+
+# 3. 建立明确的数据流
+
+统一为：
+
+```text
+RobotModel
+     │
+     ├──────────────┐
+     │              │
+     ▼              ▼
+    FK             IK
+     │              │
+     ▼              ▲
+Cartesian Pose ─────┘
+```
+
+要求：
+
+```text
+JointState → FK → Pose
+Pose → IK → JointState
+```
+
+并且：
+
+```text
+JointState
+   ↓
+FK
+   ↓
+Pose
+   ↓
+IK
+   ↓
+JointState'
+   ↓
+FK
+   ↓
+Pose'
+```
+
+最终比较：
+
+```text
+Pose vs Pose'
+```
+
+---
+
+# 4. 统一坐标和单位
+
+在项目中明确并检查：
+
+### 长度
+
+统一使用：
+
+```text
+meter
+```
+
+或者如果当前 RobotForge 已经统一使用：
+
+```text
+millimeter
+```
+
+则保持现有规范，不允许 FK/IK 各自转换。
+
+### 角度
+
+内部统一：
+
+```text
+radian
+```
+
+UI 层可以使用：
+
+```text
+degree
+```
+
+禁止在 FK/IK 内部混用 degree/radian。
+
+---
+
+# 5. FK 验证
+
+首先确认 FK 本身正确。
+
+对于：
+
+```text
+q = [q1, q2, ..., qn]
+```
+
+计算：
+
+```text
+T = FK(q)
+```
+
+得到：
+
+```text
+position
+rotation
+```
+
+至少提供：
+
+```text
+position.x
+position.y
+position.z
+```
+
+以及完整的：
+
+```text
+4x4 homogeneous transform
+```
+
+如果当前系统已经有 Quaternion / Euler / Matrix 表示，不要重复创造新的姿态表示，统一现有接口。
+
+---
+
+# 6. IK 验证
+
+对于 FK 产生的目标：
+
+```text
+target_pose = FK(q)
+```
+
+执行：
+
+```text
+q_recovered = IK(target_pose)
+```
+
+然后重新：
+
+```text
+pose_recovered = FK(q_recovered)
+```
+
+最终：
+
+```text
+pose_error =
+    position_error
+    +
+    orientation_error
+```
+
+注意：
+
+IK 不一定能够恢复出完全相同的：
+
+```text
+q
+```
+
+因为机械臂可能存在：
+
+* 多组 IK 解
+* elbow-up / elbow-down
+* 冗余解
+* 角度周期等价
+
+因此：
+
+> 不要求 `q_recovered == q`。
+
+真正需要验证的是：
+
+> `FK(q_recovered)` 是否与目标 Pose 一致。
+
+---
+
+# 7. Position Error
+
+定义：
+
+```text
+position_error =
+    ||target_position - recovered_position||
+```
+
+例如：
+
+```text
+dx = target.x - recovered.x
+dy = target.y - recovered.y
+dz = target.z - recovered.z
+
+position_error =
+    sqrt(dx² + dy² + dz²)
+```
+
+输出：
+
+```text
+position_error
+```
+
+单位与 RobotModel 长度单位一致。
+
+---
+
+# 8. Orientation Error
+
+如果当前 IK 支持姿态，则必须同时验证 orientation。
+
+不要简单比较 Euler Angle：
+
+```text
+roll
+pitch
+yaw
+```
+
+优先使用：
+
+```text
+Quaternion
+```
+
+或者：
+
+```text
+Rotation Matrix
+```
+
+计算两个姿态之间的最小旋转误差。
+
+输出：
+
+```text
+orientation_error
+```
+
+单位可以使用：
+
+```text
+radian
+```
+
+或者：
+
+```text
+degree
+```
+
+但整个项目必须统一。
+
+---
+
+# 9. Reachability
+
+IK 调用前增加：
+
+```text
+Reachability Check
+```
+
+至少区分：
+
+```text
+REACHABLE
+UNREACHABLE
+INVALID_INPUT
+JOINT_LIMIT_VIOLATION
+```
+
+不要出现：
+
+```text
+IK 强行返回一个看似有效的 JointState
+```
+
+但实际上：
+
+```text
+FK(JointState)
+```
+
+距离目标非常远。
+
+---
+
+# 10. Joint Limit
+
+所有 IK 结果必须经过：
+
+```text
+Joint Limit Validation
+```
+
+例如：
+
+```text
+joint1:
+    min = -90°
+    max = 90°
+
+joint2:
+    min = -45°
+    max = 135°
+```
+
+IK 输出：
+
+```text
+q
+```
+
+之后必须验证：
+
+```text
+min_i <= q_i <= max_i
+```
+
+如果超限：
+
+```text
+IK result invalid
+```
+
+不要默认 clamp。
+
+原因：
+
+```text
+IK → clamp → FK
+```
+
+可能导致最终位置偏差很大。
+
+---
+
+# 11. IK 多解处理
+
+如果 IK 存在多个合法解：
+
+```text
+q1
+q2
+q3
+...
+```
+
+第一版不需要复杂优化。
+
+只要求：
+
+1. 所有返回解都必须满足 Joint Limits。
+2. 所有返回解经过 FK 后都必须满足 Pose Error tolerance。
+3. 明确记录选择的是哪一个解。
+
+建议保留：
+
+```text
+solution_id
+```
+
+例如：
+
+```text
+elbow_up
+elbow_down
+```
+
+如果当前项目没有多解接口，则至少保证默认解稳定。
+
+---
+
+# 12. 闭环测试
+
+建立自动测试：
+
+```text
+test_fk_ik_fk()
+```
+
+测试流程：
+
+```text
+q_original
+      │
+      ▼
+     FK
+      │
+      ▼
+target_pose
+      │
+      ▼
+     IK
+      │
+      ▼
+q_recovered
+      │
+      ▼
+     FK
+      │
+      ▼
+recovered_pose
+```
+
+验证：
+
+```text
+position_error <= POSITION_TOLERANCE
+orientation_error <= ORIENTATION_TOLERANCE
+```
+
+---
+
+# 13. 测试数据
+
+不要只测试一个姿态。
+
+至少覆盖：
+
+### 基准姿态
+
+```text
+q = [0, 0, 0, ...]
+```
+
+### 小角度
+
+```text
+q = [10°, 20°, ...]
+```
+
+### 中间区域
+
+随机生成合法 JointState。
+
+### 接近 Joint Limit
+
+例如：
+
+```text
+q_i = min_i + margin
+q_i = max_i - margin
+```
+
+### 对称姿态
+
+用于发现：
+
+```text
+左右方向
+符号
+坐标系
+旋转方向
+```
+
+相关错误。
+
+---
+
+# 14. 随机闭环测试
+
+增加：
+
+```text
+N = 100
+```
+
+或者：
+
+```text
+N = 1000
+```
+
+随机生成合法 JointState：
+
+```text
+q_random
+```
+
+然后执行：
+
+```text
+q_random
+   ↓
+FK
+   ↓
+pose
+   ↓
+IK
+   ↓
+q_recovered
+   ↓
+FK
+   ↓
+pose_recovered
+```
+
+统计：
+
+```text
+success_count
+failure_count
+
+max_position_error
+mean_position_error
+
+max_orientation_error
+mean_orientation_error
+```
+
+最终生成类似：
+
+```text
+FK/IK Closure Test
+------------------
+Samples: 1000
+Success: 998
+Failed: 2
+
+Max Position Error: xxx
+Mean Position Error: xxx
+
+Max Orientation Error: xxx
+Mean Orientation Error: xxx
+```
+
+---
+
+# 15. 特别检查“空间扩大/缩小”
+
+重点验证：
+
+```text
+FK → IK
+```
+
+不能因为 FK/IK 参数不一致而出现：
+
+```text
+FK认为可达
+IK认为不可达
+```
+
+或者：
+
+```text
+IK认为可达
+FK结果远离目标
+```
+
+建立如下测试：
+
+```text
+Reachability Consistency Test
+```
+
+对于一组合法：
+
+```text
+JointState
+```
+
+执行：
+
+```text
+pose = FK(q)
+
+result = IK(pose)
+```
+
+要求：
+
+```text
+result == reachable
+```
+
+并且：
+
+```text
+FK(result.q)
+```
+
+必须回到：
+
+```text
+pose
+```
+
+---
+
+# 16. Boundary Test
+
+重点测试工作空间边界。
+
+例如：
+
+```text
+最大伸展
+最小伸展
+最高点
+最低点
+左右极限
+Joint Limit 边界
+```
+
+验证：
+
+```text
+boundary point
+    ↓
+IK
+    ↓
+FK
+```
+
+观察误差是否突然增大。
+
+特别记录：
+
+```text
+boundary_error
+```
+
+不要只测试工作空间中心区域。
+
+---
+
+# 17. 不要通过“扩大 tolerance”掩盖问题
+
+禁止为了让测试 PASS 而直接：
+
+```text
+position_tolerance = 10mm
+```
+
+如果出现较大误差，应优先检查：
+
+```text
+1. 坐标系
+2. Joint Axis
+3. Joint Origin
+4. Link Length
+5. Joint Order
+6. Zero Position
+7. Degree/Radian
+8. FK Transform Order
+9. IK 方程
+10. Joint Limit
+```
+
+Tolerance 只是验证参数，不是修正手段。
+
+---
+
+# 18. 建立误差诊断信息
+
+当：
+
+```text
+FK → IK → FK
+```
+
+失败时，不只输出：
+
+```text
+FAIL
+```
+
+而应该输出：
+
+```text
+original_joint
+target_pose
+
+ik_status
+
+recovered_joint
+
+recovered_pose
+
+position_error
+orientation_error
+
+joint_limit_status
+```
+
+必要时输出：
+
+```text
+per_joint_error
+```
+
+方便定位到底是：
+
+```text
+J1
+J2
+J3
+...
+```
+
+哪个关节导致问题。
+
+---
+
+# 19. 保持现有架构边界
+
+本任务只修改：
+
+```text
+运动学闭环
+```
+
+不要借此重构整个 RobotForge。
+
+不要修改：
+
+```text
+Web UI
+Device Layer
+Real Backend
+MuJoCo Backend
+通信协议
+Robot Package API
+```
+
+除非为了提供运动学测试接口确实必要。
+
+如果已有：
+
+```text
+fk.ts
+ik.ts
+fk.py
+ik.py
+RobotModel
+```
+
+优先复用和统一，而不是重新创建第二套实现。
+
+---
+
+# 20. 需要特别避免的问题
+
+禁止：
+
+```text
+FK 使用 mm
+IK 使用 m
+```
+
+禁止：
+
+```text
+FK 使用 degree
+IK 使用 radian
+```
+
+禁止：
+
+```text
+FK 使用 Link 长度 A
+IK 使用硬编码 Link 长度 B
+```
+
+禁止：
+
+```text
+FK 使用一个 Joint 顺序
+IK 使用另一个 Joint 顺序
+```
+
+禁止：
+
+```text
+IK 返回超出 Joint Limit 的结果后直接 clamp
+```
+
+禁止：
+
+```text
+为了通过测试无限扩大 tolerance
+```
+
+禁止：
+
+```text
+为了让 IK 成功而修改 FK
+```
+
+---
+
+# 21. Acceptance Criteria
+
+完成后必须满足：
+
+### A. 模型统一
+
+```text
+FK / IK 使用同一个 RobotModel
+```
+
+### B. FK 可验证
+
+```text
+Known JointState
+→ FK
+→ Expected Pose
+```
+
+通过。
+
+### C. IK 可验证
+
+```text
+Known Pose
+→ IK
+→ JointState
+```
+
+通过。
+
+### D. 闭环
+
+```text
+Joint
+→ FK
+→ Pose
+→ IK
+→ Joint'
+→ FK
+→ Pose'
+```
+
+满足：
+
+```text
+position_error <= configured tolerance
+
+orientation_error <= configured tolerance
+```
+
+### E. 随机测试
+
+至少：
+
+```text
+100 次合法随机 JointState
+```
+
+全部通过或所有失败案例均有明确原因。
+
+### F. 边界测试
+
+覆盖：
+
+```text
+Joint Limit
+Workspace Boundary
+Maximum Reach
+Minimum Reach
+```
+
+### G. Reachability Consistency
+
+不存在明显：
+
+```text
+FK 可达 → IK 不可达
+```
+
+或者：
+
+```text
+IK 返回成功 → FK 明显无法回到目标
+```
+
+### H. 可诊断
+
+任何闭环失败都能够输出：
+
+```text
+target
+IK result
+recovered pose
+position error
+orientation error
+joint limits
+```
+
+---
+
+# 22. 最终输出
+
+完成后生成：
+
+```text
+1. FK/IK 闭环设计说明
+
+2. RobotModel 参数来源说明
+
+3. FK/IK consistency test
+
+4. FK → IK → FK 自动测试
+
+5. Randomized closure test
+
+6. Workspace boundary test
+
+7. 测试结果报告
+
+8. 当前发现的问题及原因
+
+9. 后续 sim2real calibration 的扩展点
+```
+
+最终不要只报告：
+
+```text
+Tests PASS
+```
+
+而要明确回答：
+
+```text
+当前 FK 和 IK 是否使用同一模型？
+是否存在空间扩大/缩小现象？
+最大闭环误差是多少？
+误差来自哪里？
+当前 tolerance 是多少？
+哪些问题属于数学模型问题？
+哪些问题属于未来真实机械臂 calibration 问题？
+```
+
+## 最终原则
+
+本阶段的核心不是“让机械臂动起来”，而是建立：
+
+```text
+                    RobotModel
+                        │
+              ┌─────────┴─────────┐
+              ↓                   ↓
+             FK                   IK
+              ↓                   ↓
+            Pose ←────────────── Joint
+              │
+              ↓
+           Validation
+              │
+              ↓
+        FK/IK Closure
+```
+
+只有当这个闭环稳定以后，再进入：
+
+```text
+Sim2Sim
+   ↓
+Sim2Real
+   ↓
+Calibration
+   ↓
+Real Robot
+```
+
+不要在当前 sim2sim 阶段提前引入真实机械臂误差补偿。
