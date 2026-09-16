@@ -71,6 +71,30 @@ tests/                   自动化测试（§67）
 
 ## 3. 快速开始
 
+### 3.1 一键启动（推荐）
+
+双击仓库根目录的 `start.bat`（或在 cmd 里运行 `start.bat`）即可。它会自己完成：
+建/修 venv、装 Python 与前端依赖（**包括 vite**）、起后端与前端、验证代理链路，
+最后打印访问地址。关掉那个窗口 = 停掉服务。
+
+```bat
+start.bat                :: 启动后端 + 前端，退出前暂停（可直接双击）
+start.bat --check        :: 只做预检（环境 + 依赖 + 端口），不启动任何东西
+start.bat --no-install   :: 依赖缺失就报错，绝不自动安装
+start.bat --no-pause     :: 结尾不暂停（给脚本调用）
+start.bat --help         :: 用法说明
+```
+
+启动成功后访问 **<http://127.0.0.1:5173/>**（三维视图在前端；8000 只返回 JSON）。
+
+> `start.bat --check` 是**只读**的：它只报告端口占用，**不会**停掉任何进程。
+> 而正常的 `start.bat` 在启动前会先抢占 8000/5173 —— 这是必要的，因为
+> vite 配了 `strictPort: true`，端口被占时会直接报错退出而不是顺延到 5174。
+> 若检测到**另一个 RobotForge 启动器**仍在运行，脚本会直接拒绝启动并提示你
+> 先关掉那个窗口，而不是把它的服务悄悄杀掉。
+
+### 3.2 手动方式
+
 ```bash
 # 环境（独立 venv，不动全局）
 python -m venv .venv
@@ -90,6 +114,10 @@ python -m venv .venv
 # 服务端（REST + WebSocket）
 .venv/Scripts/python.exe -m uvicorn backend.api.app:create_app --factory --reload
 ```
+
+> 注意：上面这条 `backend.api.app:create_app` 装配的是 **MockBackend**（"物理"只是
+> 每 tick 前进一步）。要跑真正的 Sim2Sim 链路（MuJoCoBackend），用 `start.bat`，
+> 或手动 `-m uvicorn tools.serve_mujoco:app`。
 
 ## 4. 验收
 

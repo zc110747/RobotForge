@@ -417,3 +417,245 @@ curl -s -o /dev/null -w "%{http_code}\n" \
 最后一项容易漏：`.tsx` 返回 200 只说明转译成功，
 `import { Canvas } from "/node_modules/.vite/deps/@react-three_fiber.js?v=..."` 
 是否真的可取，要单独 curl。
+
+---
+
+## 9. 一键启动脚本（`start.bat`）的验证方法
+
+`start.bat` **不是**"顺序写几行命令"就完事 —— 它的失败模式是
+**子进程活着、脚本却报成功**（或反之）。所以验证必须落到**端口**与**HTTP 响应**。
+
+### 9.1 验证链路（顺序不可反）
+
+```text
+① 脚本自身的命令解析     : start.bat --help → 打印用法且不做事（默认 PAUSE 且 exit 0）
+② 环境自检不误报         : 在**已装好**的环境上跑，preflight 全部 OK
+③ 真启动                 : cd <repo> && start.bat --no-pause（后台，落日志文件）
+④ 判据落在端口上         : netstat -ano | findstr LISTENING  看到 8000 与 5173，
+                           且 PID 属于**本次启动**的进程（不是上一次残留的）
+⑤ 判据落在 HTTP 上       : curl http://127.0.0.1:5173/api/robots  → mini_arm
+                           curl http://127.0.0.1:5173/             → HTTP 200
+                           第 ⑤ 条比 ④ 强：端口开着不等于代理通（vite 代理
+                           打不通时会回 502 + 一句文本，端口照样 LISTENING）
+⑥ 收尾                   : 脚本必须**只 kill 自己起的 PID**。
+                           用 `taskkill /IM node.exe /F` 这类按名字杀的写法
+                           会误杀用户的编辑器 / 其它 node 服务。
+```
+
+### 9.2 三条硬约束（写脚本前先立好，否则一定踩）
+
+```text
+① 脚本必须**只写英文+ASCII**。
+   .bat 是 GBK（cp936）解析，UTF-8 的中文字节流会被拆成乱码并**吃掉后面的引号**，
+   导致 `if` / `for` 括号配对错乱 ⇒ 报错行号与实际行号完全对不上。
+   需要中文输出就用 `chcp 65001` + 纯 UTF-8 另存，但 rem 注释仍需注意；
+   最省事的做法是注释与文案全用英文。
+
+② 端口占用必须先杀**上一次的自己**再启动。
+   否则第二次运行会 `strictPort` 失败（vite 的 port 冲突是**报错退出**，
+   不是自动换端口 —— 见 frontend/vite.config.ts 的 strictPort: true）。
+
+③ 暂停与退出码**必须拆开写**（cmd 的 `call :label` 是"返回"不是"终止"）：
+   call :pause_exit 1    ✗ 调用处会继续往下走 ⇒ 顺序落入后面的 :fail
+   call :pause_exit      ✓ 只等按键
+   exit /b 1             ✓ 紧跟其后携带退出码
+```
+
+### 9.3 cmd 捕获子进程输出：**不能给 `for /f` 里的路径加引号**（实测）
+
+写 `start.bat` 时最难定位的一个坑。目标是"跑一次 `.venv` 里的 python 拿版本号"。
+
+```bat
+rem 症状：变量恒为空，且没有任何报错
+for /f "usebackq tokens=2" %%v in (`"D:\...\.venv\Scripts\python.exe" -c "import sys;print(1)" 2^>nul`) do set "V=%%v"
+```
+
+实测矩阵（Windows 10 cmd.exe，2026-09-16）：
+
+| 形式 | 结果 |
+|---|---|
+| `` `python -V 2^>^&1` ``（PATH 上的裸命令） | ✅ `Python 3.13.15` |
+| `` `python -c "print(1)" 2^>^&1` `` | ✅ `1` |
+| `` `D:\path\python.exe -c "print(1)" 2^>^&1` `` **不加引号** | ✅ `1` |
+| `` `"D:\path\python.exe" -c "print(1)"` `` **加引号 + usebackq** | ❌ **空**（静默） |
+| 先 `cd` 到该目录，再用裸名字 `python.exe` | ✅ |
+| **先把输出重定向到临时文件，再 `for /f ... in ("file")`** | ✅ **路径安全** |
+
+**根因**：`usebackq` 下反引号内的内容整体交给 `cmd /c` 执行。
+首字符是 `"` 时，cmd 的引号剥离规则把整串当成**一个**带引号的可执行名，
+于是 `"...\python.exe" -c "..."` 被当成单个文件名 ⇒ 找不到文件。
+而 `for /f` 对**跑不起来的命令零次迭代且不报错** ⇒ 变量保持空，
+与"命令跑了但没输出"完全无法区分（`2^>nul` 还顺手把错误吞了）。
+
+**正解（本工程采用）**：**不要用 `for /f` 直接捕获**，改两段式：
+
+```bat
+"%VENV_PY%" -c "import sys;print(sys.version.split()[0])" > "%TMP_OUT%" 2>&1
+for /f "usebackq tokens=*" %%v in ("%TMP_OUT%") do set "V=%%v"
+```
+
+好处有三：① 路径含空格 / 中文 / `..\` 都不影响；
+② "用退出码判成败"与"读 stdout 取值"两件事可以分开做；
+③ 捕获到的错误文本能直接打给用户看。
+
+> ⚠️ 附带教训：任何"用 `for /f` 取值"的写法都必须配一条
+> **"取不到值时显式失败"** 的检查，否则命令没跑起来时它会静默通过 ——
+> 又是"假检查"。本次就是先写成"取不到就当作没装"，
+> 结果把一个**装好的环境**报成"python 不存在"，还差点把 `.venv` 删掉重建。
+
+### 9.4 `shift` **不会**改变 `%*`（实测，非常反直觉）
+
+想在子例程里"丢掉第一个参数（标签）再执行剩下的命令"，会自然写成：
+
+```bat
+:probe
+set "LABEL=%~1"
+shift
+%* > out.txt 2>&1     rem ← 以为 %* 就是 shift 之后的那串
+```
+
+**实测（Windows 10 cmd.exe）**：
+
+```text
+call :dump "one" "two" three
+  :dump 里  %~1        -> one
+  shift 之后 %~1        -> two        （%。1 变了）
+  shift 之后 %*         -> "one" "two" three   ← ★ 没变，仍是**原始**全量
+```
+
+`shift` 只影响 `%1`/`%2`…（位置参数），**不影响 `%*`**。
+
+**后果（本工程实测症状）**：`%*` 仍以标签开头，于是实际执行的是
+
+```text
+python "D:\...\.venv\Scripts\python.exe" -c "import sys"
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ 被当成**脚本路径**喂给 python
+```
+
+结果是 `SyntaxError: Non-UTF-8 code starting with '\x90' in file ...python.exe`
+—— 一个把**解释器自身**当脚本读才可能出现的报错。
+它极具误导性：看起来像"python 坏了 / .venv 坏了"，
+实际是**参数拼错了**，而且报错内容与真正的根因（标签没被丢掉）毫无字面关联。
+
+**正解**：不要用 `shift` + `%*`。子例程里要么用 `%~2 %~3 ...` 逐位取，
+要么直接把整串作为**一个**参数传进来。本工程采用后者，因为命令行里既有
+带引号的路径又有带引号的 `-c` 代码，逐位取会踩空格：
+
+```bat
+call :probe "python" "%VENV_PY%" -c "import sys"
+...
+:probe
+set "PROBE_LABEL=%~1"
+set "PROBE_CMD=%~2"        rem 整条命令作为一个参数传入
+%PROBE_CMD% > "%TMP_OUT%" 2>&1
+set "PROBE_RC=%errorlevel%"
+exit /b %PROBE_RC%
+```
+
+> 注：把整串当**一个**参数时，调用处对引号的处理要格外小心 ——
+> 见下一节。
+
+
+
+### 9.5 诊断类开关必须**真的只读**：`--check` 曾静默杀掉运行中的实例（实测）
+
+给启动脚本加 `--check`（"只做环境预检，不起服务"）时，很容易只把**启动**
+那几行跳过，而让 `:check_ports` 原样跑完 —— 但 `:check_ports` 里含
+"端口被占就 `taskkill` 掉持有者"的分支。于是：
+
+```text
+$ start.bat --check          （此时另一个实例正在 8000/5173 上跑）
+  mode     : preflight check only (nothing is started)
+  [WARN] port 8000 is used by another program (PID 16572) - stopping it
+  [ OK ] port 8000 released
+  ...
+  Preflight passed. Nothing was started because --check was given.
+```
+
+**实测后果**：那次 `--check` 把正在服务的后端（PID 16572）和前端（6372）
+一起杀了，两个端口全空。而它同时还打印着 "nothing is started"。
+—— 一个声称"什么都不做"的命令，把用户正在用的服务端掉了。
+
+**根因**：把"是否只读"实现成了**跳过启动步骤**，而不是**跳过所有副作用**。
+判断标准应当是"这次运行会不会改变系统状态"，而不是"这次运行会不会起进程"。
+
+**修法**：在 `:check_ports` 顶部按模式分叉，`--check` 走一条**纯报告**分支 ——
+只打印谁占着端口、置一个 `PORT_BUSY` 标志，然后 `exit /b 1`，绝不 `taskkill`：
+
+```bat
+if "%CHECK_ONLY%"=="1" (
+  for %%P in (%BACKEND_PORT% %FRONTEND_PORT%) do (
+    set "OWNER="
+    call :port_owner %%P
+    if defined OWNER (
+      echo   [WARN] port %%P is in use by PID !OWNER!
+      echo          ^(--check does not free ports; stop that process yourself^)
+      set "PORT_BUSY=1"
+    )
+  )
+  if defined PORT_BUSY ( ... 完整结论横幅 ... & call :pause_if_needed & exit /b 1 )
+  echo   ports    : %BACKEND_PORT% and %FRONTEND_PORT% are free
+  exit /b 0
+)
+for %%P in (...) do ( ... 原有 taskkill 分支，只有真要启动时才走 ... )
+```
+
+**通用判据**（可复用）：给任何"检查/诊断/预览"类开关写实现时，
+逐行问"这一行会不会改变系统状态？"，而不是"这一行会不会起服务？"。
+`taskkill` / `rmdir` / 写文件 / 改配置 都属于状态改变，全部要受开关约束。
+
+**回归测试怎么写**（这次就是这么抓到的）：先让实例跑起来，记下 PID，
+**再**运行 `--check`，然后断言
+
+```text
+(a) --check 的退出码为 1（端口被占 ⇒ 预检不通过）
+(b) netstat 里两个端口**仍在** LISTENING，PID 与运行前**逐字相同**
+```
+
+(b) 是真正的判据 —— 只看 (a) 的话，"杀掉实例后报错退出"同样能让 (a) 变绿。
+
+### 9.6 从 `call` 进的子例程里用 `goto` 跳出去 —— 会把调用处的横幅一起打出来
+
+`--check` 那条失败分支最初写成在 `:check_ports` 内部 `goto check_busy`，
+把完整结论打印在另一个标签里。实测**两段横幅都打了出来**：
+
+```text
+  [FAILED] --check did not pass. Nothing was started and nothing was stopped; ...
+  ===========================================================================
+  [FAILED] preflight did not pass - nothing was started.
+  Fix the [ERROR] or [WARN] lines above, then run start.bat again.
+```
+
+原因：`:check_ports` 是通过 `call` 进入的，函数体里的 `goto <外部标签>`
+跳出去之后**再也没有回到调用点的"之后"**，于是调用处紧跟着的
+`if errorlevel 1 goto failed` 照样执行，又打了一遍通用横幅。
+
+**修法（本工程采用）**：把"自解释的完整结论"就地打印在 `:check_ports` 里，
+让调用点知道这条路径不需要再补横幅：
+
+```bat
+call :check_ports
+if errorlevel 1 goto ports_failed
+goto ports_ok
+:ports_failed
+if "%CHECK_ONLY%"=="1" exit /b 1     rem 结论已在 :check_ports 里打全
+goto failed                          rem 其它情况才用通用横幅
+:ports_ok
+```
+
+**顺带踩到的第二个坑**：同一个位置写成嵌套括号块
+
+```bat
+if errorlevel 1 (
+  if "%CHECK_ONLY%"=="1" exit /b 1
+  goto failed
+)
+```
+
+实测 **退出码变成了 0**（明明预检没通过）。改成上面那种
+"`if ... goto` + 独立标签"的平铺写法后退出码恢复为 1。
+⇒ 在 `call` 返回之后紧接着做判断并 `exit /b` 的地方，**别用括号块**。
+
+**教训**：`pause` 与退出码要拆开（本项目铁律），**横幅与退出码也要拆开** ——
+一条失败路径只应有一处负责打印、一处负责设定退出码，
+否则就会出现"打两遍"或"打一遍但码是错的"。
