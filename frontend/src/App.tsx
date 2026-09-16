@@ -463,65 +463,20 @@ export default function App(): ReactNode {
 
   return (
     <div className="app">
-      <aside className={showPanel ? "sidebar" : "sidebar collapsed"}>
-        <h1>RobotForge <span className="ver">v0.1</span></h1>
-        <p className="subtitle">
-          RobotModel → Renderer Adapter → Three.js
-        </p>
+      {/*
+        ★ 布局：建模（3D 视口）在**左**，控制台在**右**。
 
-        <div className="panel">
-          <h3>机器人</h3>
-          <ul className="robots">
-            {robots.map((r) => (
-              <li
-                key={r.id}
-                className={r.id === selected ? "active" : ""}
-                onClick={() => setSelected(r.id)}
-              >
-                {r.name} <code>{r.id}</code>
-              </li>
-            ))}
-          </ul>
-        </div>
+        理由（用户体验，不是审美）：右侧是操作栏的通行位置 ——
+        鼠标从右下角进入、右手主操作区在屏幕右侧，滑块放在左半屏
+        会导致"看着左边的模型、手却要伸到左边去拖滑块"，
+        而滑块与模型之间的横向距离越大越难对照着调。
+        把控制栏放右、模型放左，视线移动与手部移动方向一致。
 
-        {summary && <CapabilityPanel caps={summary.capabilities} />}
-
-        <ConnectionPanel
-          state={connectionState}
-          connectCount={connectCount}
-          lastError={lastErrorFrame?.message ?? null}
-          robotCount={robots.length}
-        />
-
-        {summary && vm && showJoints && (
-          <JointPanel
-            joints={vm.joints}
-            actual={authoritative}
-            status={lastFrame?.status ?? null}
-            capabilities={summary.capabilities}
-            connection={connectionState}
-            onCommand={onCommand}
-            lastError={lastErrorFrame?.message ?? null}
-            predicted={ghost.prediction?.jointPositions ?? null}
-          />
-        )}
-
-        <DiagnosticsPanel vm={built?.viewModel ?? null} problems={built?.problems ?? []} />
-
-        {payload && !payload.validation.ok && (
-          <div className="panel">
-            <h3 className="bad">校验问题（{payload.validation.issues.length}）</h3>
-            <ul>
-              {payload.validation.issues.map((i, k) => (
-                <li key={`${i.code}-${k}`}>
-                  <code>{i.code}</code> @ {i.where}: {i.message}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </aside>
-
+        ⚠️ DOM 顺序与视觉顺序**故意一致**（先 main 后 aside），
+           不用 `flex-direction: row-reverse` 之类的技巧去"看起来换过来"：
+           DOM 顺序还决定 Tab 焦点顺序与读屏顺序，视觉与语义必须对齐。
+           右侧靠 CSS 的 `order` 或直接换 DOM 顺序实现，本工程选后者。
+      */}
       <main className="viewport">
         <div className="toolbar">
           <button onClick={() => setShowPanel((v) => !v)}>
@@ -596,6 +551,65 @@ export default function App(): ReactNode {
           <div className="center">模型没有可渲染的节点</div>
         )}
       </main>
+
+      <aside className={showPanel ? "sidebar" : "sidebar collapsed"}>
+        <h1>RobotForge <span className="ver">v0.1</span></h1>
+        <p className="subtitle">
+          RobotModel → Renderer Adapter → Three.js
+        </p>
+
+        <div className="panel">
+          <h3>机器人</h3>
+          <ul className="robots">
+            {robots.map((r) => (
+              <li
+                key={r.id}
+                className={r.id === selected ? "active" : ""}
+                onClick={() => setSelected(r.id)}
+              >
+                {r.name} <code>{r.id}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        {summary && <CapabilityPanel caps={summary.capabilities} />}
+
+        <ConnectionPanel
+          state={connectionState}
+          connectCount={connectCount}
+          lastError={lastErrorFrame?.message ?? null}
+          robotCount={robots.length}
+        />
+
+        {summary && vm && showJoints && (
+          <JointPanel
+            joints={vm.joints}
+            actual={authoritative}
+            status={lastFrame?.status ?? null}
+            capabilities={summary.capabilities}
+            connection={connectionState}
+            onCommand={onCommand}
+            lastError={lastErrorFrame?.message ?? null}
+            predicted={ghost.prediction?.jointPositions ?? null}
+          />
+        )}
+
+        <DiagnosticsPanel vm={built?.viewModel ?? null} problems={built?.problems ?? []} />
+
+        {payload && !payload.validation.ok && (
+          <div className="panel">
+            <h3 className="bad">校验问题（{payload.validation.issues.length}）</h3>
+            <ul>
+              {payload.validation.issues.map((i, k) => (
+                <li key={`${i.code}-${k}`}>
+                  <code>{i.code}</code> @ {i.where}: {i.message}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </aside>
     </div>
   );
 }

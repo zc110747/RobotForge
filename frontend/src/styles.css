@@ -39,6 +39,14 @@ body,
 
 /* --- 侧栏 ---------------------------------------------------------------- */
 
+/*
+ * 控制栏在**右侧**（3D 视口在左）—— 2026-09-16 按用户要求调换。
+ * 见 App.tsx 里 <main>/<aside> 的顺序注释：调换靠 DOM 顺序，不靠 CSS 反转。
+ *
+ * ⚠️ 边框必须跟着换边：原来是 `border-right`（侧栏在左，分隔线在它右边），
+ *    现在侧栏在右，分隔线要落在它的**左边**，否则会画在屏幕最外沿，
+ *    看起来像一条贴在窗口边缘的竖线，而画布与侧栏之间反而没有分隔。
+ */
 .sidebar {
   width: 380px;
   min-width: 380px;
@@ -46,7 +54,7 @@ body,
   overflow-y: auto;
   padding: 14px 16px 40px;
   background: var(--panel);
-  border-right: 1px solid var(--line);
+  border-left: 1px solid var(--line);
 }
 
 .sidebar.collapsed {

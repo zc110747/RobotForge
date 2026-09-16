@@ -73,6 +73,12 @@ Runtime         Backend 必须真的制造 State ≠ Command；必须由注入�
 工程约定        packages/ 下**刻意没有 __init__.py**（不可跨包 import）
                 包内模块按绝对路径加载 + **必须** sys.modules[name] = mod
                 CLI 一律从 manifest.kinematics.<tag>.entry 动态加载
+前端布局        **3D 视口在左，控制栏在右**（2026-09-16 按用户要求调换）
+                靠**调换 DOM 顺序**实现，**不**用 flex row-reverse / order
+                （DOM 顺序决定 Tab 与读屏顺序，CSS 反转会让焦点顺序与视觉相反）
+                侧栏在右 ⇒ `.sidebar` 用 `border-left`（不是 border-right）
+                ⚠️ e2e 只查 `sidebar.class` 含不含 collapsed，**不查物理位置**；
+                   位置回归要另写几何探针读 getBoundingClientRect()
 ```
 
 ## 判据写法铁律（写测试前必读，跨 Phase 反复验证）
