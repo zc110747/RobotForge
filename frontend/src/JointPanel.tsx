@@ -228,7 +228,7 @@ export function JointPanel({
       <h3>关节控制（命令 → 后端）</h3>
 
       <p className="hint">
-        拖动即经 WebSocket 下发；下行的数字是**后端实际状态**。
+        拖动即经 WebSocket 下发；下行的数字是<strong>后端实际状态</strong>。
         两者不一致是正常的 —— <strong>State ≠ Command</strong>。
       </p>
 

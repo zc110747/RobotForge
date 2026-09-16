@@ -79,6 +79,13 @@ Runtime         Backend 必须真的制造 State ≠ Command；必须由注入�
                 侧栏在右 ⇒ `.sidebar` 用 `border-left`（不是 border-right）
                 ⚠️ e2e 只查 `sidebar.class` 含不含 collapsed，**不查物理位置**；
                    位置回归要另写几何探针读 getBoundingClientRect()
+前端风格        **对齐 MeArmPilot**（2026-09-16，用户要求；只改外观不改功能）
+                结构：appbar + toolbar（横贯） + body{ viewport | sidebar }
+                配色：深外壳 #16171b + **浅灰视口 #8b8e93**（关键特征）
+                语义色**一色一义**：accent 蓝=交互 / ok 绿=状态 / warn 琥珀=读数
+                ⚠️ 旧的"无装饰色"约定**已被本次取代**，别再按它改回去
+                ⚠️ 类名与文案是 e2e 判据（.panel h3 含"关节控制"、.toolbar
+                   button 含"隐藏面板"…）—— 改版只动样式，**不得改名改文案**
 ```
 
 ## 判据写法铁律（写测试前必读，跨 Phase 反复验证）

@@ -216,10 +216,9 @@ function ConnectionPanel({
             <td>WebSocket</td>
             {/*
               ★ 刻意**不**用颜色区分连接状态。
-                本工程的 UI 约定是"无装饰色"（见 USER.md 的 UI 偏好），
-                而"连接中… / 已连接 / 未连接"这三个词本身已经说清楚了。
-                仅在**出错**时用既有的 `.bad`（那是既有的告警约定，
-                不是新增的装饰色）。
+                状态语义（正常 / 警告 / 异常）由三档语义色承担：
+                这里"已连接 / 连接中… / 未连接"本身已经说清楚了，
+                不需要再叠一层颜色。仅在**出错**时用 `.bad`。
             */}
             <td>{state === "open" ? "已连接" : state === "connecting" ? "连接中…" : "未连接"}</td>
           </tr>
@@ -235,7 +234,7 @@ function ConnectionPanel({
       </table>
       <p className="hint">
         命令路径 <code>Frontend → WS → Runtime → Backend → MuJoCo</code>，
-        状态原路返回。前端**不**直接改 Three.js。
+        状态原路返回。前端<strong>不</strong>直接改 Three.js。
       </p>
       {lastError !== null && (
         <p className="bad">
@@ -455,7 +454,10 @@ export default function App(): ReactNode {
         <p className="hint">
           后端是否已启动？在仓库根目录执行：
           <br />
-          <code>.venv/Scripts/python.exe -m uvicorn backend.api.app:create_app --factory --port 8000</code>
+          <code>start.bat</code>
+          <br />
+          （或手动 <code>.venv/Scripts/python.exe -m uvicorn tools.serve_mujoco:app --port 8000</code>
+          —— 注意是 <code>tools.serve_mujoco</code>，默认的 app factory 装配的是 MockBackend）
         </p>
       </div>
     );
@@ -464,11 +466,68 @@ export default function App(): ReactNode {
   return (
     <div className="app">
       {/*
+        ★ 顶部应用栏 + 工具条（2026-09-16 按 MeArmPilot 风格新增）。
+
+        ⚠️ 工具条从 `.viewport` **内部**移到了它**外面**（现在是 app 的
+           直接子元素）。这一步是必需的，原因有二：
+             ① 视觉上 MeArmPilot 的 chip 行是横贯整个窗口顶部的，
+                放在视口内部会被侧栏切断；
+             ② 结构上它属于"全局控制"，不属于"画布自身"。
+           e2e 用 `.toolbar input[type=checkbox]` / `.toolbar button` 选取，
+           是**后代**选择器，所以移到外层**不会**让这些检查落空。
+      */}
+      <header className="appbar">
+        <span className="brand">RobotForge</span>
+        <span className="tagline">
+          RobotModel 虚拟建模 · 真实机械臂同步控制
+        </span>
+        <span className="phase">Phase 1–8</span>
+      </header>
+
+      <div className="toolbar">
+        <button onClick={() => setShowPanel((v) => !v)}>
+          {showPanel ? "隐藏面板" : "显示面板"}
+        </button>
+        <label>
+          <input
+            type="checkbox"
+            checked={showAxes}
+            onChange={(e) => setShowAxes(e.target.checked)}
+          />
+          关节轴
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={showEe}
+            onChange={(e) => setShowEe(e.target.checked)}
+          />
+          末端执行器
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={showJoints}
+            onChange={(e) => setShowJoints(e.target.checked)}
+          />
+          关节控制
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={showGhost}
+            onChange={(e) => setShowGhost(e.target.checked)}
+          />
+          本地预演
+        </label>
+        <span className="hint">左键拖拽=旋转 · 滚轮=缩放 · 右键拖拽=平移</span>
+      </div>
+
+      {/*
         ★ 布局：建模（3D 视口）在**左**，控制台在**右**。
 
         理由（用户体验，不是审美）：右侧是操作栏的通行位置 ——
-        鼠标从右下角进入、右手主操作区在屏幕右侧，滑块放在左半屏
-        会导致"看着左边的模型、手却要伸到左边去拖滑块"，
+        滑块放在左半屏会导致"看着左边的模型、手却要伸到左边去拖滑块"，
         而滑块与模型之间的横向距离越大越难对照着调。
         把控制栏放右、模型放左，视线移动与手部移动方向一致。
 
@@ -477,55 +536,17 @@ export default function App(): ReactNode {
            DOM 顺序还决定 Tab 焦点顺序与读屏顺序，视觉与语义必须对齐。
            右侧靠 CSS 的 `order` 或直接换 DOM 顺序实现，本工程选后者。
       */}
+      <div className="body">
       <main className="viewport">
-        <div className="toolbar">
-          <button onClick={() => setShowPanel((v) => !v)}>
-            {showPanel ? "隐藏面板" : "显示面板"}
-          </button>
-          <label>
-            <input
-              type="checkbox"
-              checked={showAxes}
-              onChange={(e) => setShowAxes(e.target.checked)}
-            />
-            关节轴
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={showEe}
-              onChange={(e) => setShowEe(e.target.checked)}
-            />
-            末端执行器
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={showJoints}
-              onChange={(e) => setShowJoints(e.target.checked)}
-            />
-            关节控制
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={showGhost}
-              onChange={(e) => setShowGhost(e.target.checked)}
-            />
-            本地预演
-          </label>
-          <span className="hint">左键拖拽=旋转 · 滚轮=缩放 · 右键拖拽=平移</span>
-        </div>
-
         {built && built.viewModel.nodes.length > 1 ? (
           <Canvas
             camera={{ position: [0.35, 0.28, 0.35], fov: 50, near: 0.005, far: 50 }}
             shadows={false}
           >
-            <color attach="background" args={["#0f1419"]} />
-            <hemisphereLight args={["#cfd8dc", "#1b2126", 1.1]} />
-            <directionalLight position={[2, 3, 2]} intensity={1.6} />
-            <directionalLight position={[-2, 1, -2]} intensity={0.5} />
+            <color attach="background" args={["#8b8e93"]} />
+            <hemisphereLight args={["#ffffff", "#6f737a", 1.35]} />
+            <directionalLight position={[2, 3, 2]} intensity={1.5} />
+            <directionalLight position={[-2, 1, -2]} intensity={0.45} />
 
             <SceneRoot
               vm={built.viewModel}
@@ -536,7 +557,7 @@ export default function App(): ReactNode {
             />
 
             {/* 地面网格：让"哪边是上"一眼可见（Coordinate Frame 验收的一部分） */}
-            <gridHelper args={[1, 20, "#37474f", "#232b31"]} />
+            <gridHelper args={[1, 20, "#6f737a", "#7c8087"]} />
 
             {/* Camera Orbit / Zoom / Pan 三项由 OrbitControls 一次给全 */}
             <OrbitControls
@@ -553,10 +574,17 @@ export default function App(): ReactNode {
       </main>
 
       <aside className={showPanel ? "sidebar" : "sidebar collapsed"}>
-        <h1>RobotForge <span className="ver">v0.1</span></h1>
-        <p className="subtitle">
-          RobotModel → Renderer Adapter → Three.js
-        </p>
+        {/*
+          标题块从 <h1> 的裸文本改为带容器 —— 只为样式服务。
+          ⚠️ e2e 认的是 `.panel h3`（面板标题）与文案，不认 h1，
+             所以这里调整结构是安全的。
+        */}
+        <div className="titleblock">
+          <h1>
+            RobotForge <span className="ver">v0.1</span>
+          </h1>
+          <p className="subtitle">RobotModel → Renderer Adapter → Three.js</p>
+        </div>
 
         <div className="panel">
           <h3>机器人</h3>
@@ -610,6 +638,7 @@ export default function App(): ReactNode {
           </div>
         )}
       </aside>
+      </div>
     </div>
   );
 }
